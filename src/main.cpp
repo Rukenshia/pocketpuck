@@ -1,6 +1,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Arduino.h>
+#include <SPI.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -619,7 +620,7 @@ void printWiring() {
   Serial.println("PocketPuck personality demo");
   Serial.println("Waveshare LCD -> Nano ESP32");
   Serial.println("VCC -> 3V3, GND -> GND");
-  Serial.println("DIN -> D11, CLK -> D13, CS -> D10");
+  Serial.println("DIN -> D11, CLK -> D12, CS -> D10");
   Serial.println("DC  -> D7,  RST -> D8,  BL -> D9");
 }
 
@@ -650,6 +651,14 @@ void initializeColors() {
 void setup() {
   Serial.begin(115200);
   printWiring();
+
+  // D13 is both the default SPI clock and the Nano's yellow LED. Keep it low
+  // and move the hardware SPI clock to unused D12 so display writes do not
+  // flash the LED. SPIClass::begin() is idempotent, so display.init() keeps
+  // this pin mapping when Adafruit_SPITFT calls begin() again.
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+  SPI.begin(LCD_SCK, -1, LCD_COPI, LCD_CS);
 
   pinMode(LCD_BL, OUTPUT);
   digitalWrite(LCD_BL, HIGH);

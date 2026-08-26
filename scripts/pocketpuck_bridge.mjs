@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "rivetkit/client";
@@ -8,6 +9,9 @@ export const THREAD_LIMIT = 8;
 export const MAX_DATA_AGE_MS = 30_000;
 export const INITIAL_EMPTY_SETTLE_MS = 2_000;
 export const PRIVATE_RETRY_INTERVAL_MS = 300_000;
+const AMP_URL = "https://ampcode.com";
+const RIVET_PUBLIC_ENDPOINT =
+  "https://default:pk_9tm4qz3zrMerdZXTlBRLRsmJIzSQIPH24meKBqiL6vVpscTvc4w1YPiBgymXf9Az@ampcode.com/actors";
 
 export const DETAILED_STATES = [
   "idle",
@@ -28,6 +32,52 @@ const ACTIVE_STATES = new Set([
 ]);
 
 class TerminalPrivateError extends Error {}
+
+export async function resolveAmpApiKey(
+  environment = process.env,
+  dependencies = {},
+) {
+  if (environment.AMP_API_KEY) return environment.AMP_API_KEY;
+  const dataHome =
+    environment.XDG_DATA_HOME ||
+    (environment.HOME
+      ? path.join(environment.HOME, ".local", "share")
+      : null);
+  if (!dataHome) throw new Error("HOME is unavailable");
+  const filePath = path.join(dataHome, "amp", "secrets.json");
+  const deps = {
+    lstat,
+    stat,
+    readText: (target) => readFile(target, "utf8"),
+    currentUid: () =>
+      typeof process.getuid === "function" ? process.getuid() : undefined,
+    ...dependencies,
+  };
+  const linkMetadata = await deps.lstat(filePath);
+  if (linkMetadata.isSymbolicLink()) {
+    throw new Error("Amp secret store may not be a symlink");
+  }
+  const metadata = await deps.stat(filePath);
+  if (
+    !metadata.isFile() ||
+    (typeof deps.currentUid() === "number" &&
+      metadata.uid !== deps.currentUid()) ||
+    (metadata.mode & 0o077) !== 0
+  ) {
+    throw new Error("Amp secret store failed safety checks");
+  }
+  let store;
+  try {
+    store = JSON.parse(await deps.readText(filePath));
+  } catch {
+    throw new Error("Amp secret store is malformed");
+  }
+  const apiKey = store?.["apiKey@https://ampcode.com/"];
+  if (typeof apiKey !== "string" || apiKey.length === 0) {
+    throw new Error("production Amp API key not found");
+  }
+  return apiKey;
+}
 
 function projectFromWorkspace(workspace) {
   if (!workspace || typeof workspace.uri !== "string") return "";
@@ -258,15 +308,14 @@ export class BridgeCache {
   }
 }
 
-async function bootstrapCredentials() {
-  const apiUrl = process.env.AMP_URL || "https://ampcode.com";
+async function bootstrapCredentials(configuration) {
   const response = await fetch(
-    `${apiUrl.replace(/\/$/, "")}/api/user-actor-credentials`,
+    `${AMP_URL}/api/user-actor-credentials`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.AMP_API_KEY}`,
+        Authorization: `Bearer ${configuration.apiKey}`,
       },
       body: "{}",
     },
@@ -302,16 +351,16 @@ async function withTimeout(promise, timeoutMs, message) {
   }
 }
 
-async function connectPrivateOnce(cache, initialCredentials) {
+async function connectPrivateOnce(cache, configuration, initialCredentials) {
   let credentials = initialCredentials;
   const client = createClient({
-    endpoint: process.env.RIVET_PUBLIC_ENDPOINT,
+    endpoint: RIVET_PUBLIC_ENDPOINT,
     poolName: credentials.poolName,
     devtools: false,
   });
   const handle = client.userActor.get([credentials.userId], {
     getParams: async () => {
-      const next = await bootstrapCredentials();
+      const next = await bootstrapCredentials(configuration);
       if (
         next.userId !== initialCredentials.userId ||
         next.poolName !== initialCredentials.poolName
@@ -414,14 +463,18 @@ async function connectPrivateOnce(cache, initialCredentials) {
   }
 }
 
-async function runPrivate(cache) {
+async function runPrivate(cache, configuration) {
   let delayMs = 1_000;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      const credentials = await bootstrapCredentials();
-      await connectPrivateOnce(cache, credentials);
+      const credentials = await bootstrapCredentials(configuration);
+      await connectPrivateOnce(cache, configuration, credentials);
     } catch (error) {
-      console.error(`Detailed Amp summaries failed: ${error.message}`);
+      console.error(
+        error instanceof TerminalPrivateError
+          ? "Detailed Amp summaries are incompatible or unauthorized"
+          : "Detailed Amp summaries lost connection",
+      );
       cache.markStale("user-actor");
       if (error instanceof TerminalPrivateError) return;
     }
@@ -512,22 +565,34 @@ function parseArguments(args) {
   return options;
 }
 
+export async function followAmpCycle(
+  cache,
+  ampCommand,
+  {
+    resolveApiKey = resolveAmpApiKey,
+    privateSource = runPrivate,
+    publicSource = runPublic,
+    logger = console,
+  } = {},
+) {
+  let apiKey;
+  try {
+    apiKey = await resolveApiKey();
+  } catch {
+    logger.error("Private Amp integration unavailable: API key discovery failed");
+  }
+  if (apiKey) {
+    logger.log("Trying detailed Amp user-actor summaries");
+    await privateSource(cache, { apiKey });
+    logger.log("Private Amp integration unavailable; starting fallback");
+  }
+  await publicSource(cache, ampCommand, PRIVATE_RETRY_INTERVAL_MS);
+}
+
 async function followAmp(cache, ampCommand) {
-  const privateConfigured = Boolean(
-    process.env.AMP_API_KEY && process.env.RIVET_PUBLIC_ENDPOINT,
-  );
   while (true) {
-    if (privateConfigured) {
-      console.log("Trying detailed Amp user-actor summaries");
-      await runPrivate(cache);
-      console.log("Private Amp integration unavailable; starting fallback");
-    }
     try {
-      await runPublic(
-        cache,
-        ampCommand,
-        privateConfigured ? PRIVATE_RETRY_INTERVAL_MS : null,
-      );
+      await followAmpCycle(cache, ampCommand);
     } catch (error) {
       console.error(`amp top fallback failed: ${error.message}`);
     }

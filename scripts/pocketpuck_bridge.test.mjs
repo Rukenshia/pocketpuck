@@ -4,6 +4,8 @@ import {
   INITIAL_EMPTY_SETTLE_MS,
   MAX_DATA_AGE_MS,
   THREAD_LIMIT,
+  followAmpCycle,
+  resolveAmpApiKey,
   statsResponse,
 } from "./pocketpuck_bridge.mjs";
 
@@ -122,5 +124,95 @@ describe("BridgeCache", () => {
     expect(value.reconnecting).toBeTrue();
     expect(value.stale).toBeTrue();
     expect(value.items[0].title).toBe("Keep me");
+  });
+});
+
+describe("source orchestration", () => {
+  test("starts public fallback when private discovery fails", async () => {
+    const calls = [];
+    const logs = [];
+    await followAmpCycle(new BridgeCache(), "fixture-amp", {
+      resolveApiKey: async () => {
+        throw new Error("DO_NOT_LOG_THIS_SECRET");
+      },
+      privateSource: async () => calls.push("private"),
+      publicSource: async (_cache, command, duration) =>
+        calls.push(["public", command, duration]),
+      logger: {
+        log: (message) => logs.push(message),
+        error: (message) => logs.push(message),
+      },
+    });
+    expect(calls).toEqual([
+      ["public", "fixture-amp", 300_000],
+    ]);
+    expect(logs.join(" ")).not.toContain("DO_NOT_LOG_THIS_SECRET");
+  });
+});
+
+describe("production API key resolution", () => {
+  test("prefers AMP_API_KEY without reading the secret store", async () => {
+    expect(
+      await resolveAmpApiKey(
+        { AMP_API_KEY: "override" },
+        { lstat: () => { throw new Error("unexpected read"); } },
+      ),
+    ).toBe("override");
+  });
+
+  test("reads the exact production key from XDG data home", async () => {
+    const metadata = {
+      uid: 501,
+      mode: 0o100600,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    };
+    let requestedPath;
+    const apiKey = await resolveAmpApiKey(
+      { XDG_DATA_HOME: "/portable/data" },
+      {
+        lstat: async (target) => {
+          requestedPath = target;
+          return metadata;
+        },
+        stat: async () => metadata,
+        currentUid: () => 501,
+        readText: async () =>
+          JSON.stringify({ "apiKey@https://ampcode.com/": "stored" }),
+      },
+    );
+    expect(requestedPath).toBe("/portable/data/amp/secrets.json");
+    expect(apiKey).toBe("stored");
+  });
+
+  test("rejects unsafe or malformed stores", async () => {
+    const metadata = {
+      uid: 501,
+      mode: 0o100644,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    };
+    await expect(
+      resolveAmpApiKey(
+        { HOME: "/portable/home" },
+        {
+          lstat: async () => metadata,
+          stat: async () => metadata,
+          currentUid: () => 501,
+          readText: async () => "{broken",
+        },
+      ),
+    ).rejects.toThrow("safety");
+    await expect(
+      resolveAmpApiKey(
+        { HOME: "/portable/home" },
+        {
+          lstat: async () => ({ ...metadata, mode: 0o100600 }),
+          stat: async () => ({ ...metadata, mode: 0o100600 }),
+          currentUid: () => 501,
+          readText: async () => "{broken",
+        },
+      ),
+    ).rejects.toThrow("malformed");
   });
 });

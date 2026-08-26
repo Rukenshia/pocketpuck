@@ -29,15 +29,21 @@ not the ESP32-S3's raw GPIO numbers.
 | `VCC` | `3V3` | Power |
 | `GND` | `GND` | Ground |
 | `DIN` | `D11` / `COPI` | SPI data to display |
-| `CLK` | `D13` / `SCK` | SPI clock |
+| `CLK` | `D12` / `CIPO` | Remapped SPI clock |
 | `CS` | `D10` | Chip select |
 | `DC` | `D7` | Data/command select |
 | `RST` | `D8` | Display reset |
 | `BL` | `D9` | Backlight, active high |
 
+The display is write-only, so PocketPuck remaps the hardware SPI clock to the
+otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
+with the default SPI clock and would flash on every display update if `CLK`
+were connected there.
+
 The Nano ESP32 GPIOs use 3.3 V logic, so the display is powered from `3V3` to
 keep its supply and logic voltages consistent. Do not connect a GPIO to 5 V.
-`D12` / `CIPO` is unused because this display is write-only.
+The display does not return data, which is why its normal `CIPO` function is
+not needed and `D12` can be reused as the clock output.
 
 ## Build and upload
 
@@ -84,14 +90,20 @@ The Bun process owns the HTTP endpoint, detailed user-actor connection, cache,
 reconnects, and the degraded `amp top --stream-jsonl` child process. No second
 service is required.
 
-To enable detailed states, provide `AMP_API_KEY` and the full
-`RIVET_PUBLIC_ENDPOINT` in the bridge service environment. `AMP_URL` is optional
-and defaults to `https://ampcode.com`. The hosted actor endpoint contains Amp's
-public routing configuration; take the complete value from the current Amp
-deployment rather than reconstructing or printing its compiled components. Keep
-all values in a restricted environment file on the Pi, never in firmware or Git.
-`AMP_COMMAND`, `POCKETPUCK_HOST`, and `POCKETPUCK_PORT` provide environment
-alternatives to the command-line flags and defaults.
+Detailed mode targets hosted production Amp. The bridge first uses a nonempty
+`AMP_API_KEY`; otherwise it reads Amp's existing production key from
+`$XDG_DATA_HOME/amp/secrets.json` or
+`$HOME/.local/share/amp/secrets.json`. The store must be a same-user regular
+file with no group/world access, and its exact
+`apiKey@https://ampcode.com/` entry must contain a nonempty string. Native Amp
+keychain storage cannot be read by the bridge, so those installations must use
+the environment override. No duplicate environment file is needed for the
+normal Pi setup.
+
+The production bootstrap URL and public Rivet actor routing endpoint are fixed
+in the bridge. The API key is never logged or written. `AMP_COMMAND`,
+`POCKETPUCK_HOST`, and `POCKETPUCK_PORT` provide environment alternatives to
+the command-line flags and defaults.
 
 With the private integration configured, the response has this shape (the
 `items` list is bounded to eight summaries):
@@ -115,9 +127,11 @@ For raw summaries, `project` is derived from the basename of `workspace.uri`,
 matching Amp's display fallback. The optional `workspace.displayName` is kept
 separately as `workspaceDisplayName` rather than silently substituting it.
 
-If private credentials are absent, authentication fails, its response shape
+If automatic discovery fails, private authentication fails, its response shape
 changes, or retries are exhausted, the Bun bridge automatically spawns `amp top
---stream-jsonl`. Fallback responses identify `source: "amp-top"`, preserve
+--stream-jsonl`. Discovery failure messages contain only a non-secret invariant,
+and the bridge retries discovery every five minutes. Fallback responses identify
+`source: "amp-top"`, preserve
 the verified `working × executorConnected` counts, and set `states` and `unread`
 to `null` rather than pretending those details are zero. They can only label
 items `WORKING` or `IDLE`. The experimental display-oriented `status` field is
@@ -170,7 +184,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=%h/pocketpuck
 ExecStart=%h/.bun/bin/bun scripts/pocketpuck_bridge.mjs --amp-command %h/.amp/bin/amp
-# Optional private integration; create this mode-0600 file outside Git.
+# Optional custom-deployment overrides; normal Amp file credentials are discovered.
 EnvironmentFile=-%h/.config/pocketpuck/environment
 Restart=always
 
