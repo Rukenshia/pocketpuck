@@ -3,8 +3,10 @@
 #include <Arduino.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
+#include "amp_stats.h"
 #include "amp_logo.h"
 #include "display_config.h"
 
@@ -389,9 +391,40 @@ void drawWorked(uint32_t elapsed) {
     canvas.setFont();
     canvas.setTextSize(1);
     canvas.setTextColor(eyeColor);
-    canvas.setCursor((SCREEN_WIDTH - captionWidth) / 2, 218);
+    canvas.setCursor((SCREEN_WIDTH - captionWidth) / 2, 194);
     canvas.print(caption);
   }
+}
+
+void drawCenteredText(const char* text, int16_t y, uint8_t size,
+                      uint16_t color) {
+  const int16_t width = std::strlen(text) * 6 * size;
+  canvas.setFont();
+  canvas.setTextSize(size);
+  canvas.setTextColor(color);
+  canvas.setCursor((SCREEN_WIDTH - width) / 2, y);
+  canvas.print(text);
+}
+
+void drawStatsPanel() {
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (!stats.configured) {
+    drawCenteredText("configure wifi", 216, 1, eyeColor);
+    return;
+  }
+  if (!stats.wifiConnected) {
+    drawCenteredText("connecting to wifi...", 216, 1, eyeColor);
+    return;
+  }
+  if (!stats.available) {
+    drawCenteredText("waiting for amp...", 216, 1, eyeColor);
+    return;
+  }
+
+  char counts[40];
+  std::snprintf(counts, sizeof(counts), "%u RUNNING   %u IDLE", stats.running,
+                stats.idle);
+  drawCenteredText(counts, 212, 1, eyeColor);
 }
 
 void pushCanvas() {
@@ -403,22 +436,32 @@ void pushCanvas() {
 
 void drawDemoFrame(uint32_t elapsed) {
   uint32_t sceneTime = elapsed % DEMO_DURATION_MS;
+  bool faceVisible = false;
   if (sceneTime < LOGO_DURATION_MS) {
     drawLogo(sceneTime);
   } else if ((sceneTime -= LOGO_DURATION_MS) < WAKE_DURATION_MS) {
+    faceVisible = true;
     drawWake(sceneTime);
   } else if ((sceneTime -= WAKE_DURATION_MS) < IDLE_DURATION_MS) {
+    faceVisible = true;
     drawIdle(sceneTime);
   } else if ((sceneTime -= IDLE_DURATION_MS) < BEWILDERED_DURATION_MS) {
+    faceVisible = true;
     drawBewildered(sceneTime);
   } else if ((sceneTime -= BEWILDERED_DURATION_MS) < THINKING_DURATION_MS) {
+    faceVisible = true;
     drawThinking(sceneTime);
   } else if ((sceneTime -= THINKING_DURATION_MS) <
              QUIET_SURPRISE_DURATION_MS) {
+    faceVisible = true;
     drawQuietSurprise(sceneTime);
   } else {
+    faceVisible = true;
     sceneTime -= QUIET_SURPRISE_DURATION_MS;
     drawWorked(sceneTime);
+  }
+  if (faceVisible) {
+    drawStatsPanel();
   }
   pushCanvas();
 }
@@ -475,12 +518,14 @@ void setup() {
   }
 
   demoStartedAt = millis();
+  beginAmpStats();
   drawDemoFrame(0);
   lastFrameAt = millis();
 }
 
 void loop() {
   const uint32_t now = millis();
+  updateAmpStats(now);
   if (now - lastFrameAt < FRAME_INTERVAL_MS) {
     return;
   }

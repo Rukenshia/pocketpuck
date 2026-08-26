@@ -57,8 +57,56 @@ The pin assignments live in [`include/display_config.h`](include/display_config.
 The firmware uses the Adafruit GFX and ST7789 libraries, fetched automatically
 by PlatformIO.
 
-## Current scope
+## Live Amp stats
 
-This demo cycles through expressions on a timer; it does not yet communicate
-with Amp. A later iteration can map real Amp states to these expressions over
-USB serial or Wi-Fi without changing the display wiring.
+Amp's supported External API does not currently expose live thread execution
+state. PocketPuck therefore uses a small bridge which runs the authenticated
+Amp CLI and turns `amp top` into a local HTTP endpoint. The Amp API key remains
+on the bridge host rather than being copied to the microcontroller.
+
+On a Raspberry Pi or another always-on computer, install and log into Amp, then
+run:
+
+```sh
+python3 scripts/pocketpuck_bridge.py
+curl http://localhost:8765/stats
+```
+
+The response has this shape:
+
+```json
+{"running":1,"idle":11,"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false}
+```
+
+`running` counts entries that `amp top` reports as working. `idle` counts the
+remaining entries in its active-thread list; it is not a count of every
+historical or archived thread.
+
+Configure the firmware with the Pi's LAN address:
+
+```sh
+cp include/network_config.example.h include/network_config.h
+```
+
+Edit `include/network_config.h`, then build and upload normally. This local
+file is ignored by git. The display retries Wi-Fi every 15 seconds and polls
+the bridge every 10 seconds. Until configured or connected, it shows the
+corresponding status instead of stale counts.
+
+To run the bridge under systemd, use a service like this (adjust the user,
+repository path, and Amp executable path):
+
+```ini
+[Unit]
+Description=PocketPuck Amp bridge
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/pocketpuck
+ExecStart=/usr/bin/python3 scripts/pocketpuck_bridge.py --amp-command /home/pi/.local/bin/amp
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
