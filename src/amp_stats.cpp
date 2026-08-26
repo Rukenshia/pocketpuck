@@ -87,6 +87,8 @@ void fetchStats(uint32_t now) {
     stats.needsAttention = 0;
     stats.idle = response["idle"].as<uint16_t>();
   }
+  stats.unreadAvailable = response["capabilities"]["unread"] | false;
+  stats.unread = stats.unreadAvailable ? response["unread"] | 0 : 0;
   stats.total = response["total"] | static_cast<uint16_t>(
                                       stats.working + stats.needsAttention +
                                       stats.idle);
@@ -111,8 +113,9 @@ void fetchStats(uint32_t now) {
   stats.reconnecting = false;
   stats.available = true;
   stats.initialAttemptComplete = true;
-  Serial.printf("Amp threads: %u working, %u need attention, %u idle\n",
-                stats.working, stats.needsAttention, stats.idle);
+  Serial.printf(
+      "Amp threads: %u working, %u need attention, %u unread, %u idle\n",
+      stats.working, stats.needsAttention, stats.unread, stats.idle);
 }
 
 }  // namespace

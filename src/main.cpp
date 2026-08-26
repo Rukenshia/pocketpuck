@@ -21,11 +21,12 @@ constexpr size_t SCREEN_PIXEL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT;
 constexpr uint32_t FRAME_INTERVAL_MS = 80;
 constexpr uint8_t DEPTH_LAYER_COUNT = 8;
 constexpr float FULL_ROTATION_RADIANS = 6.283185307F;
+constexpr int16_t FACE_Y_OFFSET = -14;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
 constexpr uint32_t LOGO_HOLD_AFTER_SETUP_MS = 5000;
 constexpr uint32_t OVERVIEW_INTERVAL_MS = 30000;
-constexpr uint32_t OVERVIEW_DURATION_MS = 6000;
+constexpr uint32_t OVERVIEW_DURATION_MS = 12000;
 constexpr uint32_t WAKE_DURATION_MS = 2500;
 constexpr uint32_t IDLE_DURATION_MS = 9000;
 constexpr uint32_t BEWILDERED_DURATION_MS = 5000;
@@ -76,7 +77,6 @@ struct FacePose {
   float pupilScale = 1.0F;
   float mouthCurveY = 150.0F;
   float mouthTilt = 0.0F;
-  bool thinkingDots = false;
 };
 
 float clamp01(float value) {
@@ -244,8 +244,8 @@ void drawThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
 }
 
 void drawBezierMouth(const FacePose& pose) {
-  const float leftY = 166.0F - pose.mouthTilt * 0.5F;
-  const float rightY = 166.0F + pose.mouthTilt * 0.5F;
+  const float leftY = 166.0F + FACE_Y_OFFSET - pose.mouthTilt * 0.5F;
+  const float rightY = 166.0F + FACE_Y_OFFSET + pose.mouthTilt * 0.5F;
   int16_t previousX = 103;
   int16_t previousY = std::lround(leftY);
 
@@ -255,9 +255,10 @@ void drawBezierMouth(const FacePose& pose) {
     const int16_t x =
         std::lround(inverse * inverse * 103.0F + 2.0F * inverse * t * 160.0F +
                     t * t * 217.0F);
-    const int16_t y = std::lround(inverse * inverse * leftY +
-                                  2.0F * inverse * t * pose.mouthCurveY +
-                                  t * t * rightY);
+    const int16_t y = std::lround(
+        inverse * inverse * leftY +
+        2.0F * inverse * t * (pose.mouthCurveY + FACE_Y_OFFSET) +
+        t * t * rightY);
     drawThickLine(previousX, previousY, x, y, mouthColor, 4);
     previousX = x;
     previousY = y;
@@ -265,7 +266,7 @@ void drawBezierMouth(const FacePose& pose) {
 }
 
 void drawEye(int16_t centerX, float openness, const FacePose& pose) {
-  const int16_t centerY = 82;
+  const int16_t centerY = 82 + FACE_Y_OFFSET;
   const int16_t radiusX = std::lround(29.0F * pose.eyeScale);
   const int16_t fullRadiusY = std::lround(29.0F * pose.eyeScale);
   const int16_t radiusY =
@@ -296,27 +297,18 @@ void drawEye(int16_t centerX, float openness, const FacePose& pose) {
   canvas.fillCircle(pupilX - 2, pupilY - 2, 2, eyeHighlightColor);
 }
 
-void drawThinkingDots(uint32_t elapsed) {
-  const uint8_t active = (elapsed / 520) % 3;
-  for (uint8_t dot = 0; dot < 3; ++dot) {
-    const int16_t radius = dot == active ? 4 : 2;
-    canvas.fillCircle(258 + dot * 18, 27, radius, accentColor);
-  }
-}
-
-void drawFace(const FacePose& pose, uint32_t elapsed) {
+void drawFace(const FacePose& pose) {
   drawFaceBackground();
-
-  if (pose.thinkingDots) {
-    drawThinkingDots(elapsed);
-  }
 
   drawEye(99, pose.leftEyeOpen, pose);
   drawEye(221, pose.rightEyeOpen, pose);
 
-  canvas.fillTriangle(159, 81, 144, 141, 161, 137, noseShadowColor);
-  canvas.fillTriangle(159, 81, 161, 137, 171, 140, noseLightColor);
-  canvas.drawLine(161, 137, 171, 140, faceShadowColor);
+  canvas.fillTriangle(159, 81 + FACE_Y_OFFSET, 144, 141 + FACE_Y_OFFSET,
+                      161, 137 + FACE_Y_OFFSET, noseShadowColor);
+  canvas.fillTriangle(159, 81 + FACE_Y_OFFSET, 161, 137 + FACE_Y_OFFSET,
+                      171, 140 + FACE_Y_OFFSET, noseLightColor);
+  canvas.drawLine(161, 137 + FACE_Y_OFFSET, 171, 140 + FACE_Y_OFFSET,
+                  faceShadowColor);
   drawBezierMouth(pose);
 }
 
@@ -331,7 +323,7 @@ void drawWake(uint32_t elapsed) {
   pose.rightEyeOpen = awake;
   pose.gazeY = mix(-0.3F, 0.0F, awake);
   pose.mouthCurveY = mix(157.0F, 149.0F, awake);
-  drawFace(pose, elapsed);
+  drawFace(pose);
 }
 
 void drawIdle(uint32_t elapsed) {
@@ -341,7 +333,7 @@ void drawIdle(uint32_t elapsed) {
   pose.leftEyeOpen = blinkAt(elapsed, 2600, 280) * blinkAt(elapsed, 7900, 300);
   pose.rightEyeOpen = pose.leftEyeOpen;
   pose.mouthCurveY = 149.0F + std::sin(elapsed * 0.0008F);
-  drawFace(pose, elapsed);
+  drawFace(pose);
 }
 
 void drawBewildered(uint32_t elapsed) {
@@ -354,7 +346,7 @@ void drawBewildered(uint32_t elapsed) {
   pose.rightEyeOpen = mix(1.0F, 0.72F, settle);
   pose.mouthCurveY = mix(149.0F, 147.0F, settle);
   pose.mouthTilt = -2.0F * settle;
-  drawFace(pose, elapsed);
+  drawFace(pose);
 }
 
 void drawThinking(uint32_t elapsed) {
@@ -367,8 +359,7 @@ void drawThinking(uint32_t elapsed) {
   pose.leftEyeOpen = blinkAt(elapsed, 4200, 300);
   pose.rightEyeOpen = pose.leftEyeOpen;
   pose.mouthCurveY = 148.0F + std::sin(elapsed * 0.001F);
-  pose.thinkingDots = true;
-  drawFace(pose, elapsed);
+  drawFace(pose);
 }
 
 void drawQuietSurprise(uint32_t elapsed) {
@@ -378,7 +369,7 @@ void drawQuietSurprise(uint32_t elapsed) {
   pose.pupilScale = mix(1.0F, 0.92F, surprise);
   pose.rightEyeOpen = mix(1.0F, 0.96F, surprise);
   pose.mouthCurveY = mix(148.0F, 154.0F, surprise);
-  drawFace(pose, elapsed);
+  drawFace(pose);
 }
 
 void drawWorked(uint32_t elapsed) {
@@ -388,17 +379,7 @@ void drawWorked(uint32_t elapsed) {
   pose.pupilScale = mix(0.92F, 1.0F, settle);
   pose.gazeX = 0.08F;
   pose.mouthCurveY = mix(154.0F, 149.0F, settle);
-  drawFace(pose, elapsed);
-
-  if (elapsed > 900) {
-    constexpr char caption[] = "well. that worked.";
-    constexpr int16_t captionWidth = (sizeof(caption) - 1) * 6;
-    canvas.setFont();
-    canvas.setTextSize(1);
-    canvas.setTextColor(eyeColor);
-    canvas.setCursor((SCREEN_WIDTH - captionWidth) / 2, 174);
-    canvas.print(caption);
-  }
+  drawFace(pose);
 }
 
 void drawCenteredText(const char* text, int16_t y, uint8_t size,
@@ -432,48 +413,42 @@ void drawStatsPanel() {
     return;
   }
 
-  canvas.fillRect(2, 184, 316, 54, faceShadowColor);
-  char count[8];
-  std::snprintf(count, sizeof(count), "%u", stats.working);
-  const int16_t workingWidth = std::strlen(count) * 18;
-  canvas.setFont();
-  canvas.setTextSize(3);
-  canvas.setTextColor(eyeColor);
-  canvas.setCursor(54 - workingWidth / 2, 190);
-  canvas.print(count);
-  canvas.setTextSize(1);
-  canvas.setCursor(33, 225);
-  canvas.print("WORKING");
+  canvas.fillRect(2, 170, 316, 68, faceShadowColor);
+  const auto drawMetric = [](int16_t centerX, uint16_t value, bool available,
+                             const char* firstLabel, const char* secondLabel,
+                             uint16_t activeColor) {
+    char count[8];
+    if (available) {
+      std::snprintf(count, sizeof(count), "%u", value);
+    } else {
+      std::snprintf(count, sizeof(count), "--");
+    }
+    canvas.setFont();
+    canvas.setTextSize(3);
+    canvas.setTextColor(available && value ? activeColor : eyeColor);
+    canvas.setCursor(centerX - std::strlen(count) * 9, 176);
+    canvas.print(count);
+    canvas.setTextSize(1);
+    if (secondLabel) {
+      canvas.setCursor(centerX - std::strlen(firstLabel) * 3, 218);
+      canvas.print(firstLabel);
+      canvas.setCursor(centerX - std::strlen(secondLabel) * 3, 228);
+      canvas.print(secondLabel);
+    } else {
+      canvas.setCursor(centerX - std::strlen(firstLabel) * 3, 225);
+      canvas.print(firstLabel);
+    }
+  };
 
-  if (stats.attentionAvailable) {
-    std::snprintf(count, sizeof(count), "%u", stats.needsAttention);
-  } else {
-    std::snprintf(count, sizeof(count), "--");
-  }
-  const int16_t attentionWidth = std::strlen(count) * 18;
-  canvas.setTextSize(3);
-  canvas.setTextColor(stats.attentionAvailable && stats.needsAttention
-                          ? accentColor
-                          : eyeColor);
-  canvas.setCursor(160 - attentionWidth / 2, 190);
-  canvas.print(count);
-  canvas.setTextSize(1);
-  canvas.setCursor(145, 218);
-  canvas.print("NEEDS");
-  canvas.setCursor(133, 228);
-  canvas.print("ATTENTION");
-
-  std::snprintf(count, sizeof(count), "%u", stats.idle);
-  const int16_t idleWidth = std::strlen(count) * 18;
-  canvas.setTextSize(3);
-  canvas.setTextColor(eyeColor);
-  canvas.setCursor(266 - idleWidth / 2, 190);
-  canvas.print(count);
-  canvas.setTextSize(1);
-  canvas.setCursor(254, 225);
-  canvas.print("IDLE");
-  canvas.drawFastVLine(107, 190, 40, textureColor);
-  canvas.drawFastVLine(213, 190, 40, textureColor);
+  drawMetric(40, stats.working, true, "WORKING", nullptr, eyeColor);
+  drawMetric(120, stats.needsAttention, stats.attentionAvailable, "NEEDS",
+             "ATTENTION", accentColor);
+  drawMetric(200, stats.unread, stats.unreadAvailable, "NEW", "MESSAGES",
+             unreadColor);
+  drawMetric(280, stats.idle, true, "IDLE", nullptr, eyeColor);
+  canvas.drawFastVLine(80, 176, 54, textureColor);
+  canvas.drawFastVLine(160, 176, 54, textureColor);
+  canvas.drawFastVLine(240, 176, 54, textureColor);
 }
 
 void copyEllipsized(char* output, size_t outputSize, const char* input,
@@ -521,13 +496,6 @@ bool stateNeedsAttention(const char* state) {
          std::strcmp(state, "error") == 0;
 }
 
-const char* threadDisplayLabel(const AmpThreadSummary& thread) {
-  if (stateNeedsAttention(thread.state)) {
-    return threadStateLabel(thread.state);
-  }
-  return thread.unread ? "NEW" : threadStateLabel(thread.state);
-}
-
 void drawThreadOverview() {
   const AmpStatsSnapshot stats = getAmpStats();
   canvas.fillScreen(logoBackground);
@@ -554,24 +522,24 @@ void drawThreadOverview() {
     const int16_t y = 39 + index * 45;
     char title[28];
     char project[34];
-    copyEllipsized(title, sizeof(title), thread.title, 25);
+    copyEllipsized(title, sizeof(title), thread.title, 23);
     copyEllipsized(project, sizeof(project), thread.project, 20);
+    if (thread.unread) {
+      canvas.fillCircle(9, y + 7, 4, unreadColor);
+    }
     canvas.setTextSize(2);
     canvas.setTextColor(eyeColor);
-    canvas.setCursor(12, y);
+    canvas.setCursor(20, y);
     canvas.print(title);
     canvas.setTextSize(1);
     canvas.setTextColor(textureColor);
     canvas.setCursor(12, y + 23);
     canvas.print(project[0] ? project : "no project");
-    const char* stateLabel = threadDisplayLabel(thread);
+    const char* stateLabel = threadStateLabel(thread.state);
     const bool active = std::strcmp(thread.state, "idle") != 0;
-    canvas.setTextColor(
-        thread.unread && !stateNeedsAttention(thread.state)
-            ? unreadColor
-            : (stateNeedsAttention(thread.state)
-                   ? accentColor
-                   : (active ? logoHighlightColor : eyeColor)));
+    canvas.setTextColor(stateNeedsAttention(thread.state)
+                            ? accentColor
+                            : (active ? logoHighlightColor : eyeColor));
     canvas.setCursor(302 - std::strlen(stateLabel) * 6, y + 23);
     canvas.print(stateLabel);
   }

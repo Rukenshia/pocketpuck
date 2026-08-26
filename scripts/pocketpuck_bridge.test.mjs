@@ -83,8 +83,14 @@ describe("BridgeCache", () => {
     expect(value.running).toBe(3);
     expect(value.idle).toBe(1);
     expect(value.unread).toBe(2);
+    expect(value.needsAttention).toBe(2);
+    expect(value.headline).toEqual({
+      working: 2,
+      needsAttention: 2,
+      idle: 1,
+    });
     expect(value.states.unknown).toBe(1);
-    expect(value.attention).toEqual({ awaitingApproval: 1, error: 1, unread: 2 });
+    expect(value.attention).toEqual({ awaitingApproval: 1, error: 1 });
     expect(value.items[0].state).toBe("awaiting_approval");
     expect(value.items[0].project).toBe("pocketpuck");
     expect(value.items[0].workspaceDisplayName).toBe("Friendly Puck");

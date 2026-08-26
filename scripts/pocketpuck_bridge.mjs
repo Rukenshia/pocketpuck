@@ -253,15 +253,13 @@ export class BridgeCache {
     const needsAttention = threads.filter(
       (thread) =>
         thread.state === "awaiting_approval" ||
-        thread.state === "error" ||
-        thread.hasUnreadMessages === true,
+        thread.state === "error",
     ).length;
     const headlineWorking = threads.filter(
-      (thread) =>
-        ACTIVE_STATES.has(thread.state) && thread.hasUnreadMessages !== true,
+      (thread) => ACTIVE_STATES.has(thread.state),
     ).length;
     const headlineIdle = threads.filter(
-      (thread) => thread.state === "idle" && thread.hasUnreadMessages !== true,
+      (thread) => thread.state === "idle",
     ).length;
     const items = threads.slice(0, THREAD_LIMIT).map((thread) => ({
       id: typeof thread.threadId === "string" ? thread.threadId : null,
@@ -296,7 +294,6 @@ export class BridgeCache {
         attention: {
           awaitingApproval: states.awaiting_approval,
           error: states.error,
-          unread,
         },
         items,
         updatedAt: new Date().toISOString(),

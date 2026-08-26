@@ -109,19 +109,20 @@ With the private integration configured, the response has this shape (the
 `items` list is bounded to eight summaries):
 
 ```json
-{"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"executorConnected":6,"headline":{"working":3,"needsAttention":3,"idle":9},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"awaiting_approval","executorConnected":true,"unread":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
+{"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"executorConnected":6,"headline":{"working":3,"needsAttention":1,"idle":10},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"awaiting_approval","executorConnected":true,"unread":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
 ```
 
 The bridge keeps one GLOBAL user-actor connection, loads a recent
 baseline, and applies `threadStatusUpdated` events. It exposes Amp's detailed
 `idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
-separately as `attention.unread`; `NEW` means activity worth looking at, not that
-a reply is required. `running` preserves Amp's compatibility mapping, including
-approval; `unread` is an independent raw count and may overlap active states.
-The disjoint `headline` buckets prioritize approval, error, unread, active work,
-then idle for display. Executor attachment remains orthogonal and is never
-interpreted as thread health.
+separately as `unread` and shown as a blue dot in the thread overview.
+`needsAttention` includes only approval-blocked and errored threads; unread does
+not imply that a reply is required. `running` preserves Amp's compatibility
+mapping, including approval. The headline working, attention, and idle counts
+are state-based while unread remains an independent count that may overlap any
+of them. Executor attachment remains orthogonal and is never interpreted as
+thread health.
 
 For raw summaries, `project` is derived from the basename of `workspace.uri`,
 matching Amp's display fallback. The optional `workspace.displayName` is kept
@@ -155,9 +156,10 @@ file is ignored by git. The display retries Wi-Fi every 15 seconds and polls
 the bridge every 10 seconds. Startup keeps the animated logo visible until the
 first bridge result, or a bounded 20-second attempt, plus another five seconds.
 It then shows the face even when degraded, with clear states for setup, Wi-Fi,
-bridge reconnects, and no threads. Every 30 seconds a six-second overview shows
-up to four thread titles with project and state; long fields are deterministically
-ellipsized and an overflow count represents additional rows.
+bridge reconnects, and no threads. Every 30 seconds a twelve-second overview
+shows up to four thread titles with project, state, and blue unread markers;
+long fields are deterministically ellipsized and an overflow count represents
+additional rows.
 
 The bridge binds to `0.0.0.0` by default so the microcontroller can reach it on
 the LAN. Do not expose port 8765 to the public Internet. Use `--host` to bind a

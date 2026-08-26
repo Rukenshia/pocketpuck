@@ -22,8 +22,10 @@ struct AmpStatsSnapshot {
   bool reconnecting = false;
   bool initialAttemptComplete = false;
   bool attentionAvailable = false;
+  bool unreadAvailable = false;
   uint16_t working = 0;
   uint16_t needsAttention = 0;
+  uint16_t unread = 0;
   uint16_t idle = 0;
   uint16_t total = 0;
   uint8_t threadCount = 0;
