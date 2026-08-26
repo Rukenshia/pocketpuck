@@ -21,7 +21,10 @@ constexpr uint32_t FRAME_INTERVAL_MS = 80;
 constexpr uint8_t DEPTH_LAYER_COUNT = 8;
 constexpr float FULL_ROTATION_RADIANS = 6.283185307F;
 
-constexpr uint32_t LOGO_DURATION_MS = 5000;
+constexpr uint32_t LOGO_ROTATION_MS = 5000;
+constexpr uint32_t LOGO_HOLD_AFTER_SETUP_MS = 5000;
+constexpr uint32_t OVERVIEW_INTERVAL_MS = 30000;
+constexpr uint32_t OVERVIEW_DURATION_MS = 6000;
 constexpr uint32_t WAKE_DURATION_MS = 2500;
 constexpr uint32_t IDLE_DURATION_MS = 9000;
 constexpr uint32_t BEWILDERED_DURATION_MS = 5000;
@@ -29,9 +32,8 @@ constexpr uint32_t THINKING_DURATION_MS = 6000;
 constexpr uint32_t QUIET_SURPRISE_DURATION_MS = 2500;
 constexpr uint32_t WORKED_DURATION_MS = 4000;
 constexpr uint32_t DEMO_DURATION_MS =
-    LOGO_DURATION_MS + WAKE_DURATION_MS + IDLE_DURATION_MS +
-    BEWILDERED_DURATION_MS + THINKING_DURATION_MS +
-    QUIET_SURPRISE_DURATION_MS + WORKED_DURATION_MS;
+    WAKE_DURATION_MS + IDLE_DURATION_MS + BEWILDERED_DURATION_MS +
+    THINKING_DURATION_MS + QUIET_SURPRISE_DURATION_MS + WORKED_DURATION_MS;
 
 constexpr int16_t LOGO_FRAME_WIDTH = AMP_LOGO_WIDTH;
 constexpr int16_t LOGO_FRAME_HEIGHT = AMP_LOGO_HEIGHT + 24;
@@ -57,10 +59,12 @@ uint16_t noseShadowColor;
 uint16_t noseLightColor;
 uint16_t mouthColor;
 uint16_t accentColor;
+uint16_t unreadColor;
 uint16_t textureColor;
 
 uint32_t demoStartedAt = 0;
 uint32_t lastFrameAt = 0;
+uint32_t initialSetupCompletedAt = 0;
 
 struct FacePose {
   float gazeX = 0.0F;
@@ -155,7 +159,7 @@ void transformLogo(float phase) {
 
 void drawLogo(uint32_t elapsed) {
   const float phase =
-      FULL_ROTATION_RADIANS * (elapsed % LOGO_DURATION_MS) / LOGO_DURATION_MS;
+      FULL_ROTATION_RADIANS * (elapsed % LOGO_ROTATION_MS) / LOGO_ROTATION_MS;
   transformLogo(phase);
 
   const int16_t originX = (SCREEN_WIDTH - LOGO_FRAME_WIDTH) / 2;
@@ -391,7 +395,7 @@ void drawWorked(uint32_t elapsed) {
     canvas.setFont();
     canvas.setTextSize(1);
     canvas.setTextColor(eyeColor);
-    canvas.setCursor((SCREEN_WIDTH - captionWidth) / 2, 194);
+    canvas.setCursor((SCREEN_WIDTH - captionWidth) / 2, 174);
     canvas.print(caption);
   }
 }
@@ -409,22 +413,177 @@ void drawCenteredText(const char* text, int16_t y, uint8_t size,
 void drawStatsPanel() {
   const AmpStatsSnapshot stats = getAmpStats();
   if (!stats.configured) {
-    drawCenteredText("configure wifi", 216, 1, eyeColor);
+    drawCenteredText("CONFIGURE WIFI", 207, 2, eyeColor);
     return;
   }
   if (!stats.wifiConnected) {
-    drawCenteredText("connecting to wifi...", 216, 1, eyeColor);
+    drawCenteredText("CONNECTING WIFI", 207, 2, eyeColor);
     return;
   }
   if (!stats.available) {
-    drawCenteredText("waiting for amp...", 216, 1, eyeColor);
+    drawCenteredText(stats.reconnecting ? "AMP RECONNECTING" : "BRIDGE UNAVAILABLE",
+                     207, 2, eyeColor);
     return;
   }
 
-  char counts[40];
-  std::snprintf(counts, sizeof(counts), "%u RUNNING   %u IDLE", stats.running,
-                stats.idle);
-  drawCenteredText(counts, 212, 1, eyeColor);
+  if (stats.total == 0) {
+    drawCenteredText("NO THREADS", 207, 2, eyeColor);
+    return;
+  }
+
+  canvas.fillRect(2, 184, 316, 54, faceShadowColor);
+  char count[8];
+  std::snprintf(count, sizeof(count), "%u", stats.working);
+  const int16_t workingWidth = std::strlen(count) * 18;
+  canvas.setFont();
+  canvas.setTextSize(3);
+  canvas.setTextColor(eyeColor);
+  canvas.setCursor(54 - workingWidth / 2, 190);
+  canvas.print(count);
+  canvas.setTextSize(1);
+  canvas.setCursor(33, 225);
+  canvas.print("WORKING");
+
+  if (stats.attentionAvailable) {
+    std::snprintf(count, sizeof(count), "%u", stats.needsAttention);
+  } else {
+    std::snprintf(count, sizeof(count), "--");
+  }
+  const int16_t attentionWidth = std::strlen(count) * 18;
+  canvas.setTextSize(3);
+  canvas.setTextColor(stats.attentionAvailable && stats.needsAttention
+                          ? accentColor
+                          : eyeColor);
+  canvas.setCursor(160 - attentionWidth / 2, 190);
+  canvas.print(count);
+  canvas.setTextSize(1);
+  canvas.setCursor(145, 218);
+  canvas.print("NEEDS");
+  canvas.setCursor(133, 228);
+  canvas.print("ATTENTION");
+
+  std::snprintf(count, sizeof(count), "%u", stats.idle);
+  const int16_t idleWidth = std::strlen(count) * 18;
+  canvas.setTextSize(3);
+  canvas.setTextColor(eyeColor);
+  canvas.setCursor(266 - idleWidth / 2, 190);
+  canvas.print(count);
+  canvas.setTextSize(1);
+  canvas.setCursor(254, 225);
+  canvas.print("IDLE");
+  canvas.drawFastVLine(107, 190, 40, textureColor);
+  canvas.drawFastVLine(213, 190, 40, textureColor);
+}
+
+void copyEllipsized(char* output, size_t outputSize, const char* input,
+                    size_t maxCharacters) {
+  const size_t length = std::strlen(input);
+  if (length <= maxCharacters) {
+    std::snprintf(output, outputSize, "%s", input);
+    return;
+  }
+  const size_t prefixLength = maxCharacters - 3;
+  std::snprintf(output, outputSize, "%.*s...", static_cast<int>(prefixLength),
+                input);
+}
+
+const char* threadStateLabel(const char* state) {
+  if (std::strcmp(state, "compacting") == 0) {
+    return "COMPACTING";
+  }
+  if (std::strcmp(state, "working") == 0) {
+    return "THINKING";
+  }
+  if (std::strcmp(state, "streaming") == 0) {
+    return "STREAMING";
+  }
+  if (std::strcmp(state, "tool_use") == 0) {
+    return "USING TOOL";
+  }
+  if (std::strcmp(state, "running_tools") == 0) {
+    return "RUNNING TOOLS";
+  }
+  if (std::strcmp(state, "awaiting_approval") == 0) {
+    return "APPROVAL";
+  }
+  if (std::strcmp(state, "error") == 0) {
+    return "ERROR";
+  }
+  if (std::strcmp(state, "idle") == 0) {
+    return "IDLE";
+  }
+  return "UNKNOWN";
+}
+
+bool stateNeedsAttention(const char* state) {
+  return std::strcmp(state, "awaiting_approval") == 0 ||
+         std::strcmp(state, "error") == 0;
+}
+
+const char* threadDisplayLabel(const AmpThreadSummary& thread) {
+  if (stateNeedsAttention(thread.state)) {
+    return threadStateLabel(thread.state);
+  }
+  return thread.unread ? "NEW" : threadStateLabel(thread.state);
+}
+
+void drawThreadOverview() {
+  const AmpStatsSnapshot stats = getAmpStats();
+  canvas.fillScreen(logoBackground);
+  drawCenteredText("THREAD OVERVIEW", 8, 2, eyeColor);
+  canvas.drawFastHLine(12, 30, 296, logoHighlightColor);
+
+  if (!stats.available) {
+    const char* status = !stats.configured
+                             ? "CONFIGURE WIFI"
+                             : (!stats.wifiConnected
+                                    ? "CONNECTING WIFI"
+                                    : (stats.reconnecting ? "AMP RECONNECTING"
+                                                          : "BRIDGE UNAVAILABLE"));
+    drawCenteredText(status, 108, 2, eyeColor);
+    return;
+  }
+  if (stats.total == 0) {
+    drawCenteredText("NO THREADS", 108, 2, eyeColor);
+    return;
+  }
+
+  for (uint8_t index = 0; index < stats.threadCount; ++index) {
+    const AmpThreadSummary& thread = stats.threads[index];
+    const int16_t y = 39 + index * 45;
+    char title[28];
+    char project[34];
+    copyEllipsized(title, sizeof(title), thread.title, 25);
+    copyEllipsized(project, sizeof(project), thread.project, 20);
+    canvas.setTextSize(2);
+    canvas.setTextColor(eyeColor);
+    canvas.setCursor(12, y);
+    canvas.print(title);
+    canvas.setTextSize(1);
+    canvas.setTextColor(textureColor);
+    canvas.setCursor(12, y + 23);
+    canvas.print(project[0] ? project : "no project");
+    const char* stateLabel = threadDisplayLabel(thread);
+    const bool active = std::strcmp(thread.state, "idle") != 0;
+    canvas.setTextColor(
+        thread.unread && !stateNeedsAttention(thread.state)
+            ? unreadColor
+            : (stateNeedsAttention(thread.state)
+                   ? accentColor
+                   : (active ? logoHighlightColor : eyeColor)));
+    canvas.setCursor(302 - std::strlen(stateLabel) * 6, y + 23);
+    canvas.print(stateLabel);
+  }
+
+  if (stats.total > stats.threadCount) {
+    char more[18];
+    std::snprintf(more, sizeof(more), "+%u MORE",
+                  stats.total - stats.threadCount);
+    canvas.setTextSize(1);
+    canvas.setTextColor(textureColor);
+    canvas.setCursor(308 - std::strlen(more) * 6, 224);
+    canvas.print(more);
+  }
 }
 
 void pushCanvas() {
@@ -436,33 +595,22 @@ void pushCanvas() {
 
 void drawDemoFrame(uint32_t elapsed) {
   uint32_t sceneTime = elapsed % DEMO_DURATION_MS;
-  bool faceVisible = false;
-  if (sceneTime < LOGO_DURATION_MS) {
-    drawLogo(sceneTime);
-  } else if ((sceneTime -= LOGO_DURATION_MS) < WAKE_DURATION_MS) {
-    faceVisible = true;
+  if (sceneTime < WAKE_DURATION_MS) {
     drawWake(sceneTime);
   } else if ((sceneTime -= WAKE_DURATION_MS) < IDLE_DURATION_MS) {
-    faceVisible = true;
     drawIdle(sceneTime);
   } else if ((sceneTime -= IDLE_DURATION_MS) < BEWILDERED_DURATION_MS) {
-    faceVisible = true;
     drawBewildered(sceneTime);
   } else if ((sceneTime -= BEWILDERED_DURATION_MS) < THINKING_DURATION_MS) {
-    faceVisible = true;
     drawThinking(sceneTime);
   } else if ((sceneTime -= THINKING_DURATION_MS) <
              QUIET_SURPRISE_DURATION_MS) {
-    faceVisible = true;
     drawQuietSurprise(sceneTime);
   } else {
-    faceVisible = true;
     sceneTime -= QUIET_SURPRISE_DURATION_MS;
     drawWorked(sceneTime);
   }
-  if (faceVisible) {
-    drawStatsPanel();
-  }
+  drawStatsPanel();
   pushCanvas();
 }
 
@@ -493,6 +641,7 @@ void initializeColors() {
   noseLightColor = display.color565(94, 119, 72);
   mouthColor = display.color565(31, 45, 24);
   accentColor = display.color565(184, 92, 45);
+  unreadColor = display.color565(66, 154, 224);
   textureColor = display.color565(105, 128, 77);
 }
 
@@ -531,5 +680,24 @@ void loop() {
   }
 
   lastFrameAt = now;
-  drawDemoFrame(now - demoStartedAt);
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (initialSetupCompletedAt == 0 && stats.initialAttemptComplete) {
+    initialSetupCompletedAt = now;
+  }
+  if (initialSetupCompletedAt == 0 ||
+      now - initialSetupCompletedAt < LOGO_HOLD_AFTER_SETUP_MS) {
+    drawLogo(now - demoStartedAt);
+    pushCanvas();
+    return;
+  }
+
+  const uint32_t mainElapsed = now - initialSetupCompletedAt -
+                               LOGO_HOLD_AFTER_SETUP_MS;
+  if (mainElapsed >= OVERVIEW_INTERVAL_MS &&
+      mainElapsed % OVERVIEW_INTERVAL_MS < OVERVIEW_DURATION_MS) {
+    drawThreadOverview();
+    pushCanvas();
+  } else {
+    drawDemoFrame(mainElapsed);
+  }
 }

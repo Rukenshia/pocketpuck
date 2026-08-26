@@ -1,0 +1,12 @@
+{
+  "name": "pocketpuck-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun scripts/pocketpuck_bridge.mjs",
+    "test": "bun test scripts/pocketpuck_bridge.test.mjs"
+  },
+  "dependencies": {
+    "rivetkit": "2.3.10"
+  }
+}

@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <cstring>
 
 #if __has_include("network_config.h")
 #include "network_config.h"
@@ -16,9 +17,11 @@ namespace {
 
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 15000;
 constexpr uint32_t STATS_POLL_INTERVAL_MS = 10000;
+constexpr uint32_t INITIAL_ATTEMPT_TIMEOUT_MS = 20000;
 constexpr uint16_t HTTP_TIMEOUT_MS = 3000;
 
 AmpStatsSnapshot stats;
+uint32_t statsStartedAt = 0;
 uint32_t lastWifiAttemptAt = 0;
 uint32_t lastStatsPollAt = 0;
 
@@ -42,6 +45,7 @@ void fetchStats(uint32_t now) {
   if (!http.begin(POCKETPUCK_STATS_URL)) {
     Serial.println("Unable to initialize the stats request");
     stats.available = false;
+    stats.reconnecting = false;
     return;
   }
 
@@ -49,6 +53,7 @@ void fetchStats(uint32_t now) {
   if (statusCode != HTTP_CODE_OK) {
     Serial.printf("Stats request failed: HTTP %d\n", statusCode);
     stats.available = false;
+    stats.reconnecting = false;
     http.end();
     return;
   }
@@ -56,31 +61,67 @@ void fetchStats(uint32_t now) {
   JsonDocument response;
   const DeserializationError error = deserializeJson(response, http.getStream());
   http.end();
-  if (error || !response["running"].is<uint16_t>() ||
+  if (error || !response["working"].is<uint16_t>() ||
+      !response["needsAttention"].is<uint16_t>() ||
       !response["idle"].is<uint16_t>()) {
     Serial.printf("Invalid stats response: %s\n", error.c_str());
     stats.available = false;
+    stats.reconnecting = false;
     return;
   }
 
   if (response["reconnecting"] | false) {
     Serial.println("Amp bridge is reconnecting");
     stats.available = false;
+    stats.reconnecting = true;
     return;
   }
 
-  stats.running = response["running"].as<uint16_t>();
-  stats.idle = response["idle"].as<uint16_t>();
+  stats.attentionAvailable = response["capabilities"]["detailedStates"] | false;
+  if (stats.attentionAvailable) {
+    stats.working = response["headline"]["working"] | 0;
+    stats.needsAttention = response["headline"]["needsAttention"] | 0;
+    stats.idle = response["headline"]["idle"] | 0;
+  } else {
+    stats.working = response["running"].as<uint16_t>();
+    stats.needsAttention = 0;
+    stats.idle = response["idle"].as<uint16_t>();
+  }
+  stats.total = response["total"] | static_cast<uint16_t>(
+                                      stats.working + stats.needsAttention +
+                                      stats.idle);
+  stats.threadCount = 0;
+  for (JsonObject thread : response["items"].as<JsonArray>()) {
+    if (stats.threadCount >= AMP_THREAD_SUMMARY_LIMIT) {
+      break;
+    }
+    AmpThreadSummary& summary = stats.threads[stats.threadCount++];
+    std::strncpy(summary.title, thread["title"] | "Untitled thread",
+                 sizeof(summary.title) - 1);
+    summary.title[sizeof(summary.title) - 1] = '\0';
+    std::strncpy(summary.project, thread["project"] | "",
+                 sizeof(summary.project) - 1);
+    summary.project[sizeof(summary.project) - 1] = '\0';
+    std::strncpy(summary.state, thread["state"] | "idle",
+                 sizeof(summary.state) - 1);
+    summary.state[sizeof(summary.state) - 1] = '\0';
+    summary.executorConnected = thread["executorConnected"] | false;
+    summary.unread = thread["unread"] | false;
+  }
+  stats.reconnecting = false;
   stats.available = true;
-  Serial.printf("Amp threads: %u running, %u idle\n", stats.running,
-                stats.idle);
+  stats.initialAttemptComplete = true;
+  Serial.printf("Amp threads: %u working, %u need attention, %u idle\n",
+                stats.working, stats.needsAttention, stats.idle);
 }
 
 }  // namespace
 
 void beginAmpStats() {
+  statsStartedAt = millis();
   stats.configured = hasConfiguration();
   if (!stats.configured) {
+    stats.initialAttemptComplete = true;
     Serial.println("WiFi stats disabled: create include/network_config.h");
     return;
   }
@@ -94,9 +135,16 @@ void updateAmpStats(uint32_t now) {
     return;
   }
 
+  if (!stats.initialAttemptComplete &&
+      now - statsStartedAt >= INITIAL_ATTEMPT_TIMEOUT_MS) {
+    stats.initialAttemptComplete = true;
+    Serial.println("Initial Amp connection attempt timed out; continuing retries");
+  }
+
   stats.wifiConnected = WiFi.status() == WL_CONNECTED;
   if (!stats.wifiConnected) {
     stats.available = false;
+    stats.reconnecting = false;
     if (now - lastWifiAttemptAt >= WIFI_RETRY_INTERVAL_MS) {
       connectWifi(now);
     }
