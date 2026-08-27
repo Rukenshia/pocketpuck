@@ -31,8 +31,6 @@ constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
 constexpr uint32_t LOGO_HOLD_AFTER_SETUP_MS = 5000;
-constexpr uint32_t OVERVIEW_INTERVAL_MS = 30000;
-constexpr uint32_t OVERVIEW_DURATION_MS = 12000;
 constexpr uint32_t WAKE_DURATION_MS = 2500;
 constexpr uint32_t IDLE_DURATION_MS = 9000;
 constexpr uint32_t BEWILDERED_DURATION_MS = 5000;
@@ -90,8 +88,6 @@ bool buttonLongHandled = false;
 uint32_t buttonChangedAt = 0;
 uint32_t buttonPressedAt = 0;
 uint32_t lastBrowserInteractionAt = 0;
-bool showingAutomaticOverview = false;
-bool automaticOverviewDismissed = false;
 
 enum class UiPage : uint8_t { Face, ThreadList, ThreadDetail };
 
@@ -145,11 +141,7 @@ void adjustBacklight(int8_t direction) {
 }
 
 void showFace() {
-  if (showingAutomaticOverview) {
-    automaticOverviewDismissed = true;
-  }
   uiPage = UiPage::Face;
-  showingAutomaticOverview = false;
   encoderFeedbackActive = false;
   Serial.println("Screen: face");
 }
@@ -200,9 +192,6 @@ void handleShortPress(uint32_t now) {
     showThreadList(now);
   } else if (uiPage == UiPage::ThreadList) {
     openSelectedThread(now);
-  } else if (showingAutomaticOverview) {
-    showThreadList(now);
-    openSelectedThread(now);
   } else {
     showThreadList(now);
   }
@@ -214,10 +203,7 @@ void updateControls(uint32_t now) {
   pendingEncoderSteps = 0;
   portEXIT_CRITICAL(&encoderMux);
   if (encoderSteps != 0) {
-    if (uiPage == UiPage::ThreadList || showingAutomaticOverview) {
-      if (showingAutomaticOverview) {
-        showThreadList(now);
-      }
+    if (uiPage == UiPage::ThreadList) {
       navigateThreads(encoderSteps, now, false);
     } else if (uiPage == UiPage::ThreadDetail) {
       navigateThreads(encoderSteps, now, true);
@@ -249,7 +235,7 @@ void updateControls(uint32_t now) {
   if (buttonPressed && !buttonLongHandled &&
       now - buttonPressedAt >= LONG_PRESS_MS) {
     buttonLongHandled = true;
-    if (uiPage != UiPage::Face || showingAutomaticOverview) {
+    if (uiPage != UiPage::Face) {
       showFace();
     }
   }
@@ -968,19 +954,10 @@ void loop() {
 
   const uint32_t mainElapsed = now - initialSetupCompletedAt -
                                LOGO_HOLD_AFTER_SETUP_MS;
-  const bool automaticOverview =
-      mainElapsed >= OVERVIEW_INTERVAL_MS &&
-      mainElapsed % OVERVIEW_INTERVAL_MS < OVERVIEW_DURATION_MS;
-  if (!automaticOverview) {
-    automaticOverviewDismissed = false;
-  }
-  showingAutomaticOverview =
-      uiPage == UiPage::Face && automaticOverview &&
-      !automaticOverviewDismissed;
   if (uiPage == UiPage::ThreadDetail) {
     drawThreadDetail();
     pushCanvas();
-  } else if (uiPage == UiPage::ThreadList || showingAutomaticOverview) {
+  } else if (uiPage == UiPage::ThreadList) {
     drawThreadOverview();
     pushCanvas();
   } else {

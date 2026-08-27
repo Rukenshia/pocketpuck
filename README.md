@@ -58,10 +58,6 @@ detail page to move between threads, short-press to return to the list, or hold
 the button for 700 ms to return directly to the face. Manual browsing returns
 to the face after 30 seconds without input.
 
-The automatic thread overview still appears every 30 seconds. Turning while it
-is visible begins manual list navigation, pressing opens the selected thread,
-and holding dismisses it.
-
 The display is write-only, so PocketPuck remaps the hardware SPI clock to the
 otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
 with the default SPI clock and would flash on every display update if `CLK`
@@ -187,9 +183,9 @@ file is ignored by git. The display retries Wi-Fi every 15 seconds and polls
 the bridge every 10 seconds. Startup keeps the animated logo visible until the
 first bridge result, or a bounded 20-second attempt, plus another five seconds.
 It then shows the face even when degraded, with clear states for setup, Wi-Fi,
-bridge reconnects, and no threads. Every 30 seconds a twelve-second overview
-shows up to four thread titles with project, state, and blue unread markers;
-long fields are deterministically ellipsized and an overflow count represents
+bridge reconnects, and no threads. Pressing the rotary encoder opens an overview
+with up to four thread titles, projects, states, and blue unread markers; long
+fields are deterministically ellipsized and an overflow count represents
 additional rows.
 
 The bridge binds to `0.0.0.0` by default so the microcontroller can reach it on
