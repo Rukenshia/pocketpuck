@@ -89,6 +89,10 @@ void fetchStats(uint32_t now) {
   }
   stats.unreadAvailable = response["capabilities"]["unread"] | false;
   stats.unread = stats.unreadAvailable ? response["unread"] | 0 : 0;
+  stats.shippingAvailable = response["capabilities"]["shipping"] | false;
+  stats.shipping = stats.shippingAvailable ? response["shipping"] | 0 : 0;
+  stats.shippedAvailable = response["capabilities"]["shipped"] | false;
+  stats.shipped = stats.shippedAvailable ? response["shipped"] | 0 : 0;
   stats.total = response["total"] | static_cast<uint16_t>(
                                       stats.working + stats.needsAttention +
                                       stats.idle);
@@ -111,13 +115,16 @@ void fetchStats(uint32_t now) {
     summary.state[sizeof(summary.state) - 1] = '\0';
     summary.executorConnected = thread["executorConnected"] | false;
     summary.unread = thread["unread"] | false;
+    summary.shipping = thread["shipping"] | false;
+    summary.shipped = thread["shipped"] | false;
   }
   stats.reconnecting = false;
   stats.available = true;
   stats.initialAttemptComplete = true;
   Serial.printf(
-      "Amp threads: %u working, %u need attention, %u unread, %u idle\n",
-      stats.working, stats.needsAttention, stats.unread, stats.idle);
+      "Amp threads: %u working, %u shipping, %u need attention, %u unread, %u idle\n",
+      stats.working, stats.shipping, stats.needsAttention, stats.unread,
+      stats.idle);
 }
 
 }  // namespace

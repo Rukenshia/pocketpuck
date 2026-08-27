@@ -52,11 +52,13 @@ Nano's internal pull-up resistors. If clockwise rotation lowers brightness on
 your encoder, swap its `CLK` and `DT` wires.
 
 On the animated face, turn the dial to adjust the LCD backlight and press it to
-open the thread list. Hold the button for 700 ms to open the main-screen picker:
-turning previews the Minimal, Knock, Beacon, and Panic designs with a
-synchronized scripted status lifecycle, and pressing confirms a choice that
-persists across reboots. Outside the picker, the selected design uses live Amp
-data. Working remains ambient, new messages are noticeable, and actionable
+open the thread list. Hold the button for 700 ms to open the main menu. Select
+**Select Face** to preview the Minimal, Knock, Beacon, and Panic designs with a
+synchronized scripted status lifecycle; pressing confirms a choice that
+persists across reboots. The **Settings** submenu can disable Puck's blinking or
+reset all settings, including the selected face, to their defaults. Outside the
+picker, the selected design uses live Amp data. Working remains ambient, new
+messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.
 In the thread list, turn to select a thread and press to see its full title,
 project, state, unread status, and executor attachment. Turn on the detail page
@@ -139,7 +141,7 @@ With the private integration configured, the response has this shape (the
 `items` list is bounded to eight summaries):
 
 ```json
-{"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"executorConnected":6,"headline":{"working":3,"needsAttention":1,"idle":10},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"awaiting_approval","executorConnected":true,"unread":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
+{"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"shipping":1,"shipped":0,"executorConnected":6,"headline":{"working":3,"needsAttention":1,"idle":10},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"tool_use","executorConnected":true,"unread":false,"shipping":true,"shipped":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
 ```
 
 The bridge keeps one GLOBAL user-actor connection, loads a recent baseline,
@@ -149,6 +151,17 @@ indefinitely. It exposes Amp's detailed
 `idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
 separately as `unread` and shown as a blue dot in the thread overview.
+Amp's Ship UI lifecycle is exposed independently as `shipping`. The user-actor
+summary identifies candidates but does not carry this field, so the bridge
+checks recent and active candidates with `amp threads export`; both the
+`shipping` and `awaiting_commit` stages count as active. Puck shows that state
+in the thread browser. A disappearing Ship state alone is not success because
+pausing also clears it. The bridge emits a bounded `shipped` event, and Puck
+announces **Shipped**, only after the thread ends normally and Amp applies its
+system `shipped` label. This also covers Ship workflows that deploy or perform
+another external action without creating a commit. It works with custom Ship
+prompts and tools because it follows Amp's Ship UI lifecycle rather than
+recognizing tool names.
 `needsAttention` includes only approval-blocked and errored threads; unread does
 not imply that a reply is required. Confirmation dialogs represented by Amp's
 `indicator.kind: "action-required"` are normalized to `awaiting_approval` even

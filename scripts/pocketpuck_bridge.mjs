@@ -10,6 +10,7 @@ export const MAX_DATA_AGE_MS = 30_000;
 export const INITIAL_EMPTY_SETTLE_MS = 2_000;
 export const PRIVATE_RETRY_INTERVAL_MS = 300_000;
 export const PRIVATE_RESYNC_INTERVAL_MS = 20_000;
+const SHIP_EVENT_WINDOW_MS = 60_000;
 const AMP_URL = "https://ampcode.com";
 const RIVET_PUBLIC_ENDPOINT =
   "https://default:pk_9tm4qz3zrMerdZXTlBRLRsmJIzSQIPH24meKBqiL6vVpscTvc4w1YPiBgymXf9Az@ampcode.com/actors";
@@ -97,15 +98,58 @@ function projectFromWorkspace(workspace) {
 function itemPriority(thread) {
   if (thread.state === "awaiting_approval") return 0;
   if (thread.state === "error") return 1;
-  if (thread.hasUnreadMessages === true) return 2;
-  if (ACTIVE_STATES.has(thread.state)) return 3;
-  return 4;
+  if (thread.shipping) return 2;
+  if (thread.hasUnreadMessages === true) return 3;
+  if (ACTIVE_STATES.has(thread.state)) return 4;
+  return 5;
 }
 
 function detailedState(thread) {
   if (thread.state === "error") return "error";
   if (thread.indicator?.kind === "action-required") return "awaiting_approval";
   return DETAILED_STATES.includes(thread.state) ? thread.state : "unknown";
+}
+
+function isShipping(thread) {
+  const status = thread.shippingState?.status ?? thread.meta?.shippingState?.status;
+  return status === "shipping" || status === "awaiting_commit";
+}
+
+async function runAmpJson(ampCommand, args) {
+  const process = Bun.spawn([ampCommand, ...args], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    const output = await withTimeout(
+      new Response(process.stdout).text(),
+      10_000,
+      "Amp thread export timed out",
+    );
+    if ((await process.exited) !== 0) return null;
+    return JSON.parse(output);
+  } catch {
+    process.kill();
+    return null;
+  }
+}
+
+export async function readThreadShipStatus(ampCommand, threadId) {
+  const thread = await runAmpJson(ampCommand, ["threads", "export", threadId]);
+  if (thread === null) return null;
+  if (isShipping(thread)) return "shipping";
+
+  const lastAssistant = [...(thread.messages ?? [])]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (lastAssistant?.state?.stopReason !== "end_turn") return "none";
+  const shipped = await runAmpJson(ampCommand, [
+    "threads",
+    "search",
+    `id:${threadId} label:shipped`,
+    "--json",
+  ]);
+  return Array.isArray(shipped) && shipped.length > 0 ? "shipped" : "none";
 }
 
 export class BridgeCache {
@@ -186,9 +230,16 @@ export class BridgeCache {
       {
         schemaVersion: 2,
         source: "amp-top",
-        capabilities: { detailedStates: false, unread: false },
+        capabilities: {
+          detailedStates: false,
+          unread: false,
+          shipping: false,
+          shipped: false,
+        },
         working: running,
         needsAttention: 0,
+        shipping: null,
+        shipped: null,
         running,
         idle,
         total: threads.length,
@@ -231,6 +282,7 @@ export class BridgeCache {
       .map((thread) => ({
         ...thread,
         state: detailedState(thread),
+        shipping: isShipping(thread),
         project: projectFromWorkspace(thread.workspace),
         workspaceDisplayName:
           typeof thread.workspace?.displayName === "string"
@@ -251,6 +303,8 @@ export class BridgeCache {
     const executorConnected = threads.filter(
       (thread) => thread.executorConnected === true,
     ).length;
+    const shipping = threads.filter((thread) => thread.shipping).length;
+    const shipped = threads.filter((thread) => thread.shipped).length;
     const running =
       [...ACTIVE_STATES].reduce((sum, state) => sum + states[state], 0) +
       states.awaiting_approval;
@@ -276,14 +330,23 @@ export class BridgeCache {
       state: thread.state,
       executorConnected: thread.executorConnected === true,
       unread: thread.hasUnreadMessages === true,
+      shipping: thread.shipping,
+      shipped: thread.shipped === true,
     }));
     this.publish(
       {
         schemaVersion: 2,
         source: "user-actor",
-        capabilities: { detailedStates: true, unread: true },
+        capabilities: {
+          detailedStates: true,
+          unread: true,
+          shipping: true,
+          shipped: true,
+        },
         working: headlineWorking,
         needsAttention,
+        shipping,
+        shipped,
         running,
         idle: states.idle,
         total: threads.length,
@@ -359,6 +422,8 @@ export async function connectPrivateOnce(
   {
     createActorClient = createClient,
     resyncIntervalMs = PRIVATE_RESYNC_INTERVAL_MS,
+    shippingPollIntervalMs = 10_000,
+    readShipStatus = async () => "none",
   } = {},
 ) {
   let credentials = initialCredentials;
@@ -387,9 +452,16 @@ export async function connectPrivateOnce(
   let loaded = false;
   let connected = false;
   let periodicResync;
+  let periodicShippingPoll;
   let disconnectTimer;
   let rejectFailure;
   let resyncPromise;
+  let shippingPollPromise;
+  let initialShippingScan = true;
+  let shippingThreadIds = new Set();
+  let pendingShipCompletions = new Map();
+  let recentlyShipped = new Map();
+  let shipThreadSummaries = new Map();
   const failure = new Promise((_, reject) => {
     rejectFailure = reject;
   });
@@ -399,11 +471,99 @@ export async function connectPrivateOnce(
     if (summary.archived === true) target.delete(summary.threadId);
     else target.set(summary.threadId, summary);
   };
+  const publish = () => {
+    const now = Date.now();
+    recentlyShipped = new Map(
+      [...recentlyShipped].filter(([, expiresAt]) => expiresAt > now),
+    );
+    const publishThreads = [...threads.values()];
+    const publishedIds = new Set(publishThreads.map((summary) => summary.threadId));
+    for (const threadId of recentlyShipped.keys()) {
+      const summary = shipThreadSummaries.get(threadId);
+      if (summary && !publishedIds.has(threadId)) publishThreads.push(summary);
+    }
+    const summaries = publishThreads.map((summary) => ({
+      ...summary,
+      shippingState: shippingThreadIds.has(summary.threadId)
+        ? { status: "shipping" }
+        : undefined,
+      shipped: recentlyShipped.has(summary.threadId),
+    }));
+    cache.updatePrivate(summaries, false);
+  };
+  const refreshShipping = () => {
+    if (shippingPollPromise) return shippingPollPromise;
+    shippingPollPromise = (async () => {
+      const now = Date.now();
+      pendingShipCompletions = new Map(
+        [...pendingShipCompletions].filter(([, expiresAt]) => expiresAt > now),
+      );
+      const recentIds = initialShippingScan
+        ? [...threads.keys()].slice(0, THREAD_LIMIT)
+        : [];
+      const candidateIds = new Set([
+        ...recentIds,
+        ...shippingThreadIds,
+        ...pendingShipCompletions.keys(),
+        ...recentlyShipped.keys(),
+        ...[...threads.values()]
+          .filter((summary) => ACTIVE_STATES.has(detailedState(summary)))
+          .map((summary) => summary.threadId),
+      ]);
+      const results = await Promise.all(
+        [...candidateIds].map(async (threadId) => [
+          threadId,
+          await readShipStatus(threadId),
+        ]),
+      );
+      const nextShippingThreadIds = new Set();
+      for (const [threadId, status] of results) {
+        const wasShipping = shippingThreadIds.has(threadId);
+        if (status === "shipping") {
+          nextShippingThreadIds.add(threadId);
+          pendingShipCompletions.delete(threadId);
+          const summary = threads.get(threadId);
+          if (summary) shipThreadSummaries.set(threadId, summary);
+        } else if (status === null && wasShipping) {
+          nextShippingThreadIds.add(threadId);
+        } else if (status === "none" && wasShipping) {
+          pendingShipCompletions.set(
+            threadId,
+            Date.now() + SHIP_EVENT_WINDOW_MS,
+          );
+        }
+        if (
+          status === "shipped" &&
+          (wasShipping || pendingShipCompletions.has(threadId))
+        ) {
+          pendingShipCompletions.delete(threadId);
+          recentlyShipped.set(threadId, Date.now() + SHIP_EVENT_WINDOW_MS);
+        }
+      }
+      shippingThreadIds = nextShippingThreadIds;
+      shipThreadSummaries = new Map(
+        [...shipThreadSummaries].filter(
+          ([threadId]) =>
+            shippingThreadIds.has(threadId) ||
+            pendingShipCompletions.has(threadId) ||
+            recentlyShipped.has(threadId),
+        ),
+      );
+      initialShippingScan = false;
+      if (connected && !loading) publish();
+    })().finally(() => {
+      shippingPollPromise = null;
+    });
+    return shippingPollPromise;
+  };
   const offThread = connection.on("threadStatusUpdated", (summary) => {
     if (loading) buffered.push(summary);
     else {
       apply(threads, summary);
-      if (connected) cache.updatePrivate([...threads.values()], false);
+      if (connected) {
+        publish();
+        refreshShipping().catch(rejectFailure);
+      }
       else cache.markStale("user-actor");
     }
   });
@@ -429,7 +589,8 @@ export async function connectPrivateOnce(
       threads = replacement;
       loading = false;
       connected = true;
-      cache.updatePrivate([...threads.values()], false);
+      publish();
+      await refreshShipping();
     })().finally(() => {
       resyncPromise = null;
     });
@@ -461,9 +622,14 @@ export async function connectPrivateOnce(
       if (connected) resync().catch(rejectFailure);
       else cache.markStale("user-actor");
     }, resyncIntervalMs);
+    periodicShippingPoll = setInterval(
+      () => refreshShipping().catch(rejectFailure),
+      shippingPollIntervalMs,
+    );
     await failure;
   } finally {
     clearInterval(periodicResync);
+    clearInterval(periodicShippingPoll);
     clearTimeout(disconnectTimer);
     if (typeof offThread === "function") offThread();
     if (typeof offStatus === "function") offStatus();
@@ -477,7 +643,10 @@ async function runPrivate(cache, configuration) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       const credentials = await bootstrapCredentials(configuration);
-      await connectPrivateOnce(cache, configuration, credentials);
+      await connectPrivateOnce(cache, configuration, credentials, {
+        readShipStatus: (threadId) =>
+          readThreadShipStatus(configuration.ampCommand, threadId),
+      });
     } catch (error) {
       console.error(
         error instanceof TerminalPrivateError
@@ -592,7 +761,7 @@ export async function followAmpCycle(
   }
   if (apiKey) {
     logger.log("Trying detailed Amp user-actor summaries");
-    await privateSource(cache, { apiKey });
+    await privateSource(cache, { apiKey, ampCommand });
     logger.log("Private Amp integration unavailable; starting fallback");
   }
   await publicSource(cache, ampCommand, PRIVATE_RETRY_INTERVAL_MS);

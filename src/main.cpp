@@ -107,10 +107,26 @@ uint32_t buttonChangedAt = 0;
 uint32_t buttonPressedAt = 0;
 uint32_t lastBrowserInteractionAt = 0;
 
-enum class UiPage : uint8_t { Face, ThreadList, ThreadDetail };
-enum class NotificationKind : uint8_t { None, Attention, Message, ThreadActive };
+enum class UiPage : uint8_t {
+  Face,
+  MainMenu,
+  Settings,
+  ThreadList,
+  ThreadDetail,
+};
+enum class NotificationKind : uint8_t {
+  None,
+  Attention,
+  Message,
+  ThreadActive,
+  Shipped,
+};
 
 UiPage uiPage = UiPage::Face;
+uint8_t mainMenuIndex = 0;
+uint8_t settingsMenuIndex = 0;
+bool blinkingDisabled = false;
+uint32_t settingsResetAt = 0;
 uint8_t selectedThreadIndex = 0;
 AmpThreadSummary detailThread;
 bool detailUnreadAvailable = false;
@@ -124,6 +140,7 @@ uint32_t reelAllClearStartedAt = 0;
 
 // DESIGN REEL state (delete with the reel).
 uint8_t reelMode = 0;
+uint8_t reelModeBeforeSelection = 0;
 uint32_t reelModeChangedAt = 0;
 bool reelModeSelecting = false;
 uint32_t reelSelectionStartedAt = 0;
@@ -182,6 +199,36 @@ void showFace() {
   Serial.println("Screen: face");
 }
 
+void showMainMenu(uint32_t now) {
+  if (reelModeSelecting) {
+    reelMode = reelModeBeforeSelection;
+    reelModeSelecting = false;
+  }
+  uiPage = UiPage::MainMenu;
+  mainMenuIndex = 0;
+  lastBrowserInteractionAt = now;
+  encoderFeedbackActive = false;
+  Serial.println("Screen: main menu");
+}
+
+void showSettings(uint32_t now) {
+  uiPage = UiPage::Settings;
+  settingsMenuIndex = 0;
+  lastBrowserInteractionAt = now;
+  encoderFeedbackActive = false;
+  Serial.println("Screen: settings");
+}
+
+void showFacePicker(uint32_t now) {
+  uiPage = UiPage::Face;
+  reelModeBeforeSelection = reelMode;
+  reelModeSelecting = true;
+  reelModeChangedAt = now;
+  reelSelectionStartedAt = now;
+  encoderFeedbackActive = false;
+  Serial.println("Face picker: turn to preview, click to confirm");
+}
+
 void showThreadList(uint32_t now) {
   const AmpStatsSnapshot stats = getAmpStats();
   if (stats.threadCount > 0 && selectedThreadIndex >= stats.threadCount) {
@@ -223,17 +270,56 @@ void navigateThreads(int8_t steps, uint32_t now, bool showDetail) {
   }
 }
 
+void saveSelectedFace() {
+  Preferences preferences;
+  preferences.begin("pocketpuck", false);
+  preferences.putUChar("design", reelMode);
+  preferences.putUChar("designVer", REEL_VERSION);
+  preferences.end();
+}
+
+void saveBlinkingPreference() {
+  Preferences preferences;
+  preferences.begin("pocketpuck", false);
+  preferences.putBool("noBlink", blinkingDisabled);
+  preferences.end();
+}
+
+void resetSettings(uint32_t now) {
+  Preferences preferences;
+  preferences.begin("pocketpuck", false);
+  preferences.clear();
+  preferences.end();
+
+  reelMode = 0;
+  blinkingDisabled = false;
+  reelModeChangedAt = now;
+  settingsResetAt = now;
+  Serial.println("Settings reset to defaults");
+}
+
 void handleShortPress(uint32_t now) {
   if (uiPage == UiPage::Face && reelModeSelecting) {
     reelModeSelecting = false;
     reelModeChangedAt = now;
-    Preferences preferences;
-    preferences.begin("pocketpuck", false);
-    preferences.putUChar("design", reelMode);
-    preferences.putUChar("designVer", REEL_VERSION);
-    preferences.end();
+    saveSelectedFace();
     Serial.printf("Design confirmed: %u/%u %s\n", reelMode + 1,
                   REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
+  } else if (uiPage == UiPage::MainMenu) {
+    if (mainMenuIndex == 0) {
+      showFacePicker(now);
+    } else {
+      showSettings(now);
+    }
+  } else if (uiPage == UiPage::Settings) {
+    lastBrowserInteractionAt = now;
+    if (settingsMenuIndex == 0) {
+      blinkingDisabled = !blinkingDisabled;
+      saveBlinkingPreference();
+      Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
+    } else {
+      resetSettings(now);
+    }
   } else if (uiPage == UiPage::ThreadDetail) {
     showThreadList(now);
   } else if (uiPage == UiPage::ThreadList) {
@@ -249,7 +335,18 @@ void updateControls(uint32_t now) {
   pendingEncoderSteps = 0;
   portEXIT_CRITICAL(&encoderMux);
   if (encoderSteps != 0) {
-    if (uiPage == UiPage::ThreadList) {
+    if (uiPage == UiPage::MainMenu) {
+      const int16_t next = static_cast<int16_t>(mainMenuIndex) + encoderSteps;
+      mainMenuIndex = static_cast<uint8_t>(
+          std::max<int16_t>(0, std::min<int16_t>(1, next)));
+      lastBrowserInteractionAt = now;
+    } else if (uiPage == UiPage::Settings) {
+      const int16_t next =
+          static_cast<int16_t>(settingsMenuIndex) + encoderSteps;
+      settingsMenuIndex = static_cast<uint8_t>(
+          std::max<int16_t>(0, std::min<int16_t>(1, next)));
+      lastBrowserInteractionAt = now;
+    } else if (uiPage == UiPage::ThreadList) {
       navigateThreads(encoderSteps, now, false);
     } else if (uiPage == UiPage::ThreadDetail) {
       navigateThreads(encoderSteps, now, true);
@@ -293,11 +390,7 @@ void updateControls(uint32_t now) {
     if (uiPage != UiPage::Face) {
       showFace();
     } else if (DESIGN_REEL_ENABLED) {
-      reelModeSelecting = true;
-      reelModeChangedAt = now;
-      reelSelectionStartedAt = now;
-      encoderFeedbackActive = false;
-      Serial.println("Design picker: turn to preview, click to confirm");
+      showMainMenu(now);
     }
   }
   if (uiPage != UiPage::Face &&
@@ -326,6 +419,9 @@ float mix(float from, float to, float amount) {
 }
 
 float blinkAt(uint32_t elapsed, uint32_t center, uint32_t duration = 240) {
+  if (blinkingDisabled) {
+    return 1.0F;
+  }
   const int32_t distance =
       std::abs(static_cast<int32_t>(elapsed) - static_cast<int32_t>(center));
   const float halfDuration = duration / 2.0F;
@@ -624,6 +720,53 @@ void drawCenteredText(const char* text, int16_t y, uint8_t size,
   canvas.print(text);
 }
 
+void drawMenuRow(const char* label, const char* value, int16_t y,
+                 bool selected) {
+  if (selected) {
+    canvas.fillRoundRect(12, y, 296, 48, 6, faceShadowColor);
+    canvas.drawFastVLine(12, y, 48, logoHighlightColor);
+  }
+  canvas.setFont();
+  canvas.setTextSize(2);
+  canvas.setTextColor(eyeColor);
+  canvas.setCursor(28, y + 9);
+  canvas.print(label);
+  if (value) {
+    canvas.setTextSize(1);
+    canvas.setTextColor(selected ? logoHighlightColor : textureColor);
+    canvas.setCursor(294 - std::strlen(value) * 6, y + 16);
+    canvas.print(value);
+  }
+}
+
+void drawMainMenu() {
+  canvas.fillScreen(logoBackground);
+  drawCenteredText("MENU", 12, 2, eyeColor);
+  canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
+  drawMenuRow("SELECT FACE", REEL_MODE_NAMES[reelMode], 59,
+              mainMenuIndex == 0);
+  drawMenuRow("SETTINGS", nullptr, 119, mainMenuIndex == 1);
+  drawCenteredText("TURN: SELECT   PRESS: OPEN", 218, 1, textureColor);
+}
+
+void drawSettings(uint32_t now) {
+  canvas.fillScreen(logoBackground);
+  drawCenteredText("SETTINGS", 12, 2, eyeColor);
+  canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
+  drawMenuRow("DISABLE BLINKING", nullptr, 59, settingsMenuIndex == 0);
+  canvas.drawRect(278, 74, 18, 18,
+                  blinkingDisabled ? logoHighlightColor : eyeColor);
+  if (blinkingDisabled) {
+    drawThickLine(281, 82, 286, 88, logoHighlightColor, 3);
+    drawThickLine(286, 88, 294, 77, logoHighlightColor, 3);
+  }
+  drawMenuRow("RESET SETTINGS", nullptr, 119, settingsMenuIndex == 1);
+  if (settingsResetAt != 0 && now - settingsResetAt < REEL_OVERLAY_MS) {
+    drawCenteredText("SETTINGS RESET", 185, 1, logoHighlightColor);
+  }
+  drawCenteredText("HOLD: BACK TO FACE", 218, 1, textureColor);
+}
+
 void drawSideMetric(int16_t centerX, int16_t y, uint16_t value,
                     bool available, const char* firstLabel,
                     const char* secondLabel, uint16_t activeColor) {
@@ -734,8 +877,10 @@ void drawStatusNotification(uint32_t elapsed, NotificationKind kind,
     canvas.setTextColor(paper);
     canvas.setTextSize(2);
     canvas.setCursor(39, 9);
-    canvas.print(kind == NotificationKind::Message ? "NEW MESSAGE"
-                                                   : "THREAD WORKING");
+    canvas.print(kind == NotificationKind::Message
+                     ? "NEW MESSAGE"
+                     : (kind == NotificationKind::Shipped ? "SHIPPED"
+                                                           : "THREAD WORKING"));
     canvas.setTextSize(1);
     canvas.setCursor(40, 31);
     canvas.print(subtitle);
@@ -769,8 +914,11 @@ void startNotification(NotificationKind kind, const char* title, uint32_t now) {
   Serial.printf("Notification: %s%s%s\n",
                 kind == NotificationKind::Attention
                     ? "needs attention"
-                    : (kind == NotificationKind::Message ? "new message"
-                                                          : "thread working"),
+                    : (kind == NotificationKind::Message
+                           ? "new message"
+                           : (kind == NotificationKind::Shipped
+                                  ? "shipped"
+                                  : "thread working")),
                 notificationThreadTitle[0] ? " — " : "",
                 notificationThreadTitle);
 }
@@ -790,6 +938,7 @@ void updateNotifications(uint32_t now) {
   const char* messageTitle = nullptr;
   const char* activeTitle = nullptr;
   const char* attentionTitle = nullptr;
+  const char* shippedTitle = nullptr;
   for (uint8_t index = 0; index < current.threadCount; ++index) {
     const AmpThreadSummary& thread = current.threads[index];
     const AmpThreadSummary* previous = findPreviousThread(thread);
@@ -809,6 +958,10 @@ void updateNotifications(uint32_t now) {
         !stateIsWorking(previous->state)) {
       activeTitle = thread.title;
     }
+    if (!shippedTitle && thread.shipped &&
+        (!previous || !previous->shipped)) {
+      shippedTitle = thread.title;
+    }
   }
 
   if (current.attentionAvailable &&
@@ -824,6 +977,9 @@ void updateNotifications(uint32_t now) {
       }
     }
     startNotification(NotificationKind::Attention, attentionTitle, now);
+  } else if (current.shippedAvailable &&
+             (shippedTitle || current.shipped > previousStats.shipped)) {
+    startNotification(NotificationKind::Shipped, shippedTitle, now);
   } else if (current.unreadAvailable &&
              (messageTitle || current.unread > previousStats.unread)) {
     for (uint8_t index = 0; index < current.threadCount; ++index) {
@@ -953,11 +1109,13 @@ void drawThreadOverview() {
     canvas.setTextColor(textureColor);
     canvas.setCursor(12, y + 23);
     canvas.print(project[0] ? project : "no project");
-    const char* stateLabel = threadStateLabel(thread.state);
+    const char* stateLabel =
+        thread.shipping ? "SHIPPING" : threadStateLabel(thread.state);
     const bool active = std::strcmp(thread.state, "idle") != 0;
     canvas.setTextColor(stateNeedsAttention(thread.state)
                             ? accentColor
-                            : (active ? logoHighlightColor : eyeColor));
+                            : (thread.shipping || active ? logoHighlightColor
+                                                         : eyeColor));
     canvas.setCursor(302 - std::strlen(stateLabel) * 6, y + 23);
     canvas.print(stateLabel);
   }
@@ -1020,10 +1178,15 @@ void drawThreadDetail() {
                   28);
   drawCenteredText(project, 103, 1, textureColor);
 
-  const char* stateLabel = threadStateLabel(detailThread.state);
+  const char* stateLabel = detailThread.shipping
+                               ? "SHIPPING"
+                               : threadStateLabel(detailThread.state);
   const uint16_t stateColor = stateNeedsAttention(detailThread.state)
                                   ? accentColor
-                                  : (std::strcmp(detailThread.state, "idle") == 0
+                                  : (detailThread.shipping
+                                         ? logoHighlightColor
+                                         : std::strcmp(detailThread.state,
+                                                       "idle") == 0
                                          ? eyeColor
                                          : logoHighlightColor);
   drawCenteredText(stateLabel, 128, 2, stateColor);
@@ -1047,7 +1210,14 @@ void drawThreadDetail() {
 // comparison plays the same 25 s lifecycle in every mode: idle -> thread
 // active -> new message -> needs attention -> all clear.
 
-enum class ReelPhase : uint8_t { Idle, Working, Message, Attention, Resolved };
+enum class ReelPhase : uint8_t {
+  Idle,
+  Working,
+  Message,
+  Attention,
+  Resolved,
+  Shipped,
+};
 
 constexpr uint32_t REEL_IDLE_MS = 6000;
 constexpr uint32_t REEL_WORKING_MS = 5000;
@@ -1168,6 +1338,13 @@ ReelScene reelScene(uint32_t elapsed) {
 
 const AmpThreadSummary* reelThreadForPhase(const AmpStatsSnapshot& stats,
                                            ReelPhase phase) {
+  if (phase == ReelPhase::Working && stats.shipping > 0) {
+    for (uint8_t index = 0; index < stats.threadCount; ++index) {
+      if (stats.threads[index].shipping) {
+        return &stats.threads[index];
+      }
+    }
+  }
   for (uint8_t index = 0; index < stats.threadCount; ++index) {
     const AmpThreadSummary& thread = stats.threads[index];
     if ((phase == ReelPhase::Attention && stateNeedsAttention(thread.state)) ||
@@ -1184,7 +1361,13 @@ ReelScene liveReelScene(uint32_t now) {
   scene.stats = getAmpStats();
 
   const uint32_t notificationElapsed = now - notificationStartedAt;
-  if (scene.stats.available && scene.stats.working == 0 &&
+  if (notificationKind == NotificationKind::Shipped &&
+      notificationElapsed < NOTIFICATION_DURATION_MS) {
+    scene.phase = ReelPhase::Shipped;
+    scene.phaseElapsed = notificationElapsed;
+    std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
+                  notificationThreadTitle);
+  } else if (scene.stats.available && scene.stats.working == 0 &&
       scene.stats.needsAttention == 0 && scene.stats.unread == 0 &&
       reelAllClearStartedAt != 0 &&
       now - reelAllClearStartedAt < REEL_RESOLVED_MS) {
@@ -1204,6 +1387,9 @@ ReelScene liveReelScene(uint32_t now) {
                   notificationThreadTitle);
   } else if (scene.stats.available && scene.stats.needsAttention > 0) {
     scene.phase = ReelPhase::Attention;
+    scene.phaseElapsed = NOTIFICATION_DURATION_MS + 200 + now;
+  } else if (scene.stats.available && scene.stats.shipping > 0) {
+    scene.phase = ReelPhase::Working;
     scene.phaseElapsed = NOTIFICATION_DURATION_MS + 200 + now;
   } else if (scene.stats.available && scene.stats.unread > 0) {
     scene.phase = ReelPhase::Message;
@@ -1257,8 +1443,13 @@ ReelStatus reelStatus(const ReelScene& scene) {
   ReelStatus status;
   switch (scene.phase) {
     case ReelPhase::Working:
-      std::snprintf(status.text, sizeof(status.text), "WORKING: %u",
-                    scene.stats.working);
+      if (scene.stats.shipping > 0) {
+        std::snprintf(status.text, sizeof(status.text), "SHIPPING: %u",
+                      scene.stats.shipping);
+      } else {
+        std::snprintf(status.text, sizeof(status.text), "WORKING: %u",
+                      scene.stats.working);
+      }
       status.color = reelGreenColor();
       break;
     case ReelPhase::Message:
@@ -1273,6 +1464,10 @@ ReelStatus reelStatus(const ReelScene& scene) {
       break;
     case ReelPhase::Resolved:
       std::snprintf(status.text, sizeof(status.text), "%s", "ALL CLEAR");
+      status.color = reelGreenColor();
+      break;
+    case ReelPhase::Shipped:
+      std::snprintf(status.text, sizeof(status.text), "%s", "SHIPPED");
       status.color = reelGreenColor();
       break;
     default:
@@ -1318,6 +1513,11 @@ FacePose reelPose(const ReelScene& scene) {
       pose.rightEyeOpen = pose.leftEyeOpen;
       pose.mouthCurveY = 143.0F;
       break;
+    case ReelPhase::Shipped:
+      pose.leftEyeOpen = mix(1.0F, 0.9F, scene.intro);
+      pose.rightEyeOpen = pose.leftEyeOpen;
+      pose.mouthCurveY = mix(149.0F, 141.0F, scene.intro);
+      break;
   }
   return pose;
 }
@@ -1346,7 +1546,8 @@ const char* reelProject(const ReelScene& scene) {
 const char* reelDetail(const ReelScene& scene) {
   switch (scene.phase) {
     case ReelPhase::Working:
-      return "Thread is working";
+      return scene.stats.shipping > 0 ? "Ship in progress"
+                                      : "Thread is working";
     case ReelPhase::Message:
       return "New message in thread";
     case ReelPhase::Attention: {
@@ -1362,6 +1563,8 @@ const char* reelDetail(const ReelScene& scene) {
     }
     case ReelPhase::Resolved:
       return "Nothing needs attention";
+    case ReelPhase::Shipped:
+      return "Ship completed";
     default:
       return "No active notifications";
   }
@@ -1866,13 +2069,15 @@ float reelCardSettle(uint32_t elapsed);
 const char* reelEventHeadline(const ReelScene& scene) {
   switch (scene.phase) {
     case ReelPhase::Working:
-      return "WORKING";
+      return scene.stats.shipping > 0 ? "SHIPPING" : "WORKING";
     case ReelPhase::Message:
       return "NEW MESSAGE";
     case ReelPhase::Attention:
       return "NEEDS ATTENTION";
     case ReelPhase::Resolved:
       return "ALL CLEAR";
+    case ReelPhase::Shipped:
+      return "SHIPPED";
     default:
       return "ALL QUIET";
   }
@@ -2625,6 +2830,9 @@ uint8_t reelThreadPriority(const AmpThreadSummary& thread) {
 }
 
 const char* reelThreadStatus(const AmpThreadSummary& thread) {
+  if (thread.shipping) {
+    return "SHIPPING";
+  }
   if (stateNeedsAttention(thread.state)) {
     return threadStateLabel(thread.state);
   }
@@ -3209,6 +3417,7 @@ void setup() {
   preferences.begin("pocketpuck", false);
   const uint8_t savedReelVersion = preferences.getUChar("designVer", 0);
   const uint8_t savedReelMode = preferences.getUChar("design", 0);
+  blinkingDisabled = preferences.getBool("noBlink", false);
   reelMode = savedReelVersion == REEL_VERSION &&
                      savedReelMode < REEL_MODE_COUNT
                  ? savedReelMode
@@ -3216,6 +3425,7 @@ void setup() {
   preferences.end();
   Serial.printf("Saved design: %u/%u %s\n", reelMode + 1, REEL_MODE_COUNT,
                 REEL_MODE_NAMES[reelMode]);
+  Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
 
   // D13 is both the default SPI clock and the Nano's yellow LED. Keep it low
   // and move the hardware SPI clock to unused D12 so display writes do not
@@ -3293,6 +3503,12 @@ void loop() {
       drawStatusNotification(notificationElapsed, notificationKind,
                              notificationThreadTitle, getAmpStats());
     }
+    pushCanvas();
+  } else if (uiPage == UiPage::MainMenu) {
+    drawMainMenu();
+    pushCanvas();
+  } else if (uiPage == UiPage::Settings) {
+    drawSettings(now);
     pushCanvas();
   } else if (uiPage == UiPage::ThreadDetail) {
     drawThreadDetail();

@@ -92,9 +92,61 @@ describe("BridgeCache", () => {
     });
     expect(value.states.unknown).toBe(1);
     expect(value.attention).toEqual({ awaitingApproval: 1, error: 1 });
+    expect(value.shipping).toBe(0);
     expect(value.items[0].state).toBe("awaiting_approval");
     expect(value.items[0].project).toBe("pocketpuck");
     expect(value.items[0].workspaceDisplayName).toBe("Friendly Puck");
+  });
+
+  test("preserves the Ship UI lifecycle independently of execution state", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "shipping",
+        title: "Promote release",
+        state: "tool_use",
+        shippingState: { status: "shipping" },
+      },
+      {
+        threadId: "awaiting-commit",
+        title: "Push release commit",
+        state: "idle",
+        meta: { shippingState: { status: "awaiting_commit" } },
+      },
+      {
+        threadId: "ordinary",
+        title: "Ordinary tool",
+        state: "tool_use",
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.capabilities.shipping).toBeTrue();
+    expect(value.shipping).toBe(2);
+    expect(value.shipped).toBe(0);
+    expect(value.items.find((item) => item.id === "shipping").shipping).toBeTrue();
+    expect(
+      value.items.find((item) => item.id === "awaiting-commit").shipping,
+    ).toBeTrue();
+    expect(value.items.find((item) => item.id === "ordinary").shipping).toBeFalse();
+  });
+
+  test("publishes a confirmed shipped event separately from shipping", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "shipped",
+        title: "Released",
+        state: "idle",
+        shipped: true,
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.capabilities.shipped).toBeTrue();
+    expect(value.shipping).toBe(0);
+    expect(value.shipped).toBe(1);
+    expect(value.items[0].shipped).toBeTrue();
   });
 
   test("maps the live confirmation indicator to awaiting approval", () => {
@@ -275,6 +327,53 @@ describe("private actor liveness", () => {
     expect(actionCount).toBe(3);
     expect(cache.read().items[0].title).toBe("Fresh");
     expect(disposed).toBeTrue();
+  });
+
+  test("turns an observed Ship lifecycle into a confirmed shipped event", async () => {
+    let actionCount = 0;
+    let shippingReadCount = 0;
+    const connection = {
+      ready: Promise.resolve(),
+      on: () => () => {},
+      onStatusChange: () => () => {},
+      onError: () => () => {},
+      action: async () => {
+        actionCount += 1;
+        if (actionCount === 1) {
+          return [{ threadId: "ship", title: "Release", state: "tool_use" }];
+        }
+        if (actionCount === 2) return [];
+        throw new Error("stop fixture");
+      },
+      dispose: async () => {},
+    };
+    const createActorClient = () => ({
+      userActor: {
+        get: () => ({ connect: () => connection }),
+      },
+    });
+    const cache = new BridgeCache();
+
+    await expect(
+      connectPrivateOnce(
+        cache,
+        { apiKey: "fixture" },
+        { userId: "user", wsToken: "token", poolName: "pool" },
+        {
+          createActorClient,
+          resyncIntervalMs: 8,
+          shippingPollIntervalMs: 5,
+          readShipStatus: async () => {
+            const statuses = ["shipping", "none", "shipped"];
+            return statuses[Math.min(shippingReadCount++, statuses.length - 1)];
+          },
+        },
+      ),
+    ).rejects.toThrow("stop fixture");
+
+    expect(cache.read().shipping).toBe(0);
+    expect(cache.read().shipped).toBe(1);
+    expect(cache.read().items[0].shipped).toBeTrue();
   });
 });
 
