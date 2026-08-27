@@ -98,6 +98,8 @@ void fetchStats(uint32_t now) {
       break;
     }
     AmpThreadSummary& summary = stats.threads[stats.threadCount++];
+    std::strncpy(summary.id, thread["id"] | "", sizeof(summary.id) - 1);
+    summary.id[sizeof(summary.id) - 1] = '\0';
     std::strncpy(summary.title, thread["title"] | "Untitled thread",
                  sizeof(summary.title) - 1);
     summary.title[sizeof(summary.title) - 1] = '\0';

@@ -102,6 +102,12 @@ function itemPriority(thread) {
   return 4;
 }
 
+function detailedState(thread) {
+  if (thread.state === "error") return "error";
+  if (thread.indicator?.kind === "action-required") return "awaiting_approval";
+  return DETAILED_STATES.includes(thread.state) ? thread.state : "unknown";
+}
+
 export class BridgeCache {
   constructor(clock = () => performance.now()) {
     this.clock = clock;
@@ -224,7 +230,7 @@ export class BridgeCache {
       .filter((thread) => thread && typeof thread === "object")
       .map((thread) => ({
         ...thread,
-        state: DETAILED_STATES.includes(thread.state) ? thread.state : "unknown",
+        state: detailedState(thread),
         project: projectFromWorkspace(thread.workspace),
         workspaceDisplayName:
           typeof thread.workspace?.displayName === "string"

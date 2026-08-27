@@ -97,6 +97,99 @@ describe("BridgeCache", () => {
     expect(value.items[0].workspaceDisplayName).toBe("Friendly Puck");
   });
 
+  test("maps the live confirmation indicator to awaiting approval", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "T-01a04318-5512-770b-9179-59251371964a",
+        title: "PocketPuck approval testing",
+        state: "tool_use",
+        executorConnected: true,
+        indicator: {
+          kind: "action-required",
+          description: "PocketPuck approval test",
+          observedAt: "Thu, 27 Aug 2026 12:10:58 GMT",
+        },
+        hasUnreadMessages: false,
+        updatedAt: "2026-08-27T12:10:58.128Z",
+        workspace: {
+          uri: "file:///home/user/workspace/repo",
+          displayName: "repo",
+        },
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.needsAttention).toBe(1);
+    expect(value.working).toBe(0);
+    expect(value.running).toBe(1);
+    expect(value.states.tool_use).toBe(0);
+    expect(value.states.awaiting_approval).toBe(1);
+    expect(value.attention).toEqual({ awaitingApproval: 1, error: 0 });
+    expect(value.items[0].state).toBe("awaiting_approval");
+  });
+
+  test("does not infer attention from idle, unread, executor, or active states", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "idle",
+        state: "idle",
+        executorConnected: false,
+        hasUnreadMessages: false,
+      },
+      {
+        threadId: "unread",
+        state: "idle",
+        executorConnected: false,
+        hasUnreadMessages: true,
+      },
+      {
+        threadId: "attached",
+        state: "idle",
+        executorConnected: true,
+        hasUnreadMessages: false,
+      },
+      {
+        threadId: "tool",
+        state: "tool_use",
+        executorConnected: true,
+        hasUnreadMessages: false,
+      },
+      {
+        threadId: "working-indicator",
+        state: "working",
+        indicator: { kind: "in-progress" },
+        executorConnected: true,
+        hasUnreadMessages: false,
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.needsAttention).toBe(0);
+    expect(value.unread).toBe(1);
+    expect(value.executorConnected).toBe(3);
+    expect(value.states.idle).toBe(3);
+    expect(value.states.tool_use).toBe(1);
+    expect(value.states.working).toBe(1);
+  });
+
+  test("preserves errors when an action-required indicator is also present", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "error",
+        state: "error",
+        indicator: { kind: "action-required" },
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.states.error).toBe(1);
+    expect(value.states.awaiting_approval).toBe(0);
+    expect(value.attention).toEqual({ awaitingApproval: 0, error: 1 });
+  });
+
   test("switches sources only after a complete snapshot", () => {
     const cache = new BridgeCache();
     cache.updatePublic({ threads: [publicThread(1)] });

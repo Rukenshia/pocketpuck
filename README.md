@@ -52,11 +52,17 @@ Nano's internal pull-up resistors. If clockwise rotation lowers brightness on
 your encoder, swap its `CLK` and `DT` wires.
 
 On the animated face, turn the dial to adjust the LCD backlight and press it to
-open the thread list. In the list, turn to select a thread and press to see its
-full title, project, state, unread status, and executor attachment. Turn on the
-detail page to move between threads, short-press to return to the list, or hold
-the button for 700 ms to return directly to the face. Manual browsing returns
-to the face after 30 seconds without input.
+open the thread list. Hold the button for 700 ms to open the main-screen picker:
+turning previews the Minimal, Knock, Beacon, and Panic designs with a
+synchronized scripted status lifecycle, and pressing confirms a choice that
+persists across reboots. Outside the picker, the selected design uses live Amp
+data. Working remains ambient, new messages are noticeable, and actionable
+states receive the strongest treatment while directing the user back to Amp.
+In the thread list, turn to select a thread and press to see its full title,
+project, state, unread status, and executor attachment. Turn on the detail page
+to move between threads, short-press to return to the list, or hold the button
+for 700 ms to return directly to the face. Manual browsing returns to the face
+after 30 seconds without input.
 
 The display is write-only, so PocketPuck remaps the hardware SPI clock to the
 otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
@@ -144,11 +150,13 @@ indefinitely. It exposes Amp's detailed
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
 separately as `unread` and shown as a blue dot in the thread overview.
 `needsAttention` includes only approval-blocked and errored threads; unread does
-not imply that a reply is required. `running` preserves Amp's compatibility
-mapping, including approval. The headline working, attention, and idle counts
-are state-based while unread remains an independent count that may overlap any
-of them. Executor attachment remains orthogonal and is never interpreted as
-thread health.
+not imply that a reply is required. Confirmation dialogs represented by Amp's
+`indicator.kind: "action-required"` are normalized to `awaiting_approval` even
+when their raw execution state remains `tool_use`. `running` preserves Amp's
+compatibility mapping, including approval. The headline working, attention, and
+idle counts are state-based while unread remains an independent count that may
+overlap any of them. Executor attachment remains orthogonal and is never
+interpreted as thread health.
 
 For raw summaries, `project` is derived from the basename of `workspace.uri`,
 matching Amp's display fallback. The optional `workspace.displayName` is kept
