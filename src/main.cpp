@@ -1536,12 +1536,13 @@ ReelStatus reelStatus(const ReelScene& scene) {
       status.color = reelGreenColor();
       break;
     case ReelPhase::Message:
-      std::snprintf(status.text, sizeof(status.text), "NEW MESSAGE%s: %u",
-                    scene.stats.unread == 1 ? "" : "S", scene.stats.unread);
+      std::snprintf(status.text, sizeof(status.text), "%u NEW MESSAGE%s",
+                    scene.stats.unread,
+                    scene.stats.unread == 1 ? "" : "S");
       status.color = unreadColor;
       break;
     case ReelPhase::Attention:
-      std::snprintf(status.text, sizeof(status.text), "NEEDS ATTENTION: %u",
+      std::snprintf(status.text, sizeof(status.text), "%u NEEDS ATTENTION",
                     scene.stats.needsAttention);
       status.color = accentColor;
       break;
