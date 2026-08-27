@@ -17,7 +17,8 @@ new image assets.
 - Arduino Nano ESP32
 - [Waveshare 2inch LCD Module](https://www.waveshare.com/wiki/2inch_LCD_Module)
   (240 x 320, ST7789V, 4-wire SPI)
-- 8 jumper wires
+- Five-pin rotary encoder module (`CLK`, `DT`, `SW`, `+`, `GND`)
+- 13 jumper wires
 
 ### Wiring
 
@@ -34,6 +35,32 @@ not the ESP32-S3's raw GPIO numbers.
 | `DC` | `D7` | Data/command select |
 | `RST` | `D8` | Display reset |
 | `BL` | `D9` | Backlight, active high |
+
+| Rotary encoder | Nano ESP32 | Purpose |
+| --- | --- | --- |
+| `CLK` | `D2` | Rotation clock |
+| `DT` | `D3` | Rotation direction |
+| `SW` | `D4` | Push switch |
+| `+` | `D5` | Module pull-up voltage |
+| `GND` | `GND` | Common ground |
+
+PocketPuck holds `D5` high at 3.3 V to supply the resistor-only encoder module's
+small pull-up current, leaving the Nano's `3V3` pin available for the display.
+Do not use this arrangement for a module with a motor, lamp, or other substantial
+load, and never connect the encoder's `+` to 5 V. PocketPuck also enables the
+Nano's internal pull-up resistors. If clockwise rotation lowers brightness on
+your encoder, swap its `CLK` and `DT` wires.
+
+On the animated face, turn the dial to adjust the LCD backlight and press it to
+open the thread list. In the list, turn to select a thread and press to see its
+full title, project, state, unread status, and executor attachment. Turn on the
+detail page to move between threads, short-press to return to the list, or hold
+the button for 700 ms to return directly to the face. Manual browsing returns
+to the face after 30 seconds without input.
+
+The automatic thread overview still appears every 30 seconds. Turning while it
+is visible begins manual list navigation, pressing opens the selected thread,
+and holding dismisses it.
 
 The display is write-only, so PocketPuck remaps the hardware SPI clock to the
 otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
@@ -59,7 +86,8 @@ PlatformIO should automatically find the Nano ESP32's USB port. If an upload
 cannot find the board, double-press RESET to enter the Arduino bootloader (the
 green LED pulses), then run the upload command again.
 
-The pin assignments live in [`include/display_config.h`](include/display_config.h).
+The display and rotary pin assignments live in
+[`include/display_config.h`](include/display_config.h).
 The firmware uses the Adafruit GFX and ST7789 libraries, fetched automatically
 by PlatformIO.
 
@@ -112,8 +140,10 @@ With the private integration configured, the response has this shape (the
 {"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"executorConnected":6,"headline":{"working":3,"needsAttention":1,"idle":10},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"awaiting_approval","executorConnected":true,"unread":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
 ```
 
-The bridge keeps one GLOBAL user-actor connection, loads a recent
-baseline, and applies `threadStatusUpdated` events. It exposes Amp's detailed
+The bridge keeps one GLOBAL user-actor connection, loads a recent baseline,
+applies `threadStatusUpdated` events, and refreshes the authoritative baseline
+every 20 seconds so a silent event subscription cannot preserve old data
+indefinitely. It exposes Amp's detailed
 `idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
 separately as `unread` and shown as a blue dot in the thread overview.
@@ -141,9 +171,10 @@ retries private mode every five minutes and switches sources only after a full
 snapshot; streams are never merged.
 
 The bridge settles an initial empty stream event for two seconds, returns HTTP
-503 until data is ready, and returns 503 whenever no event has arrived for 30
-seconds. Aggregate transport reconnecting state causes firmware to hide retained
-counts rather than displaying them as current.
+503 until data is ready, and returns 503 whenever no event or successful
+baseline refresh has arrived for 30 seconds. Aggregate transport reconnecting
+state causes firmware to hide retained counts rather than displaying them as
+current; marking a retained snapshot stale does not renew its freshness timer.
 
 Configure the firmware with the Pi's LAN address:
 

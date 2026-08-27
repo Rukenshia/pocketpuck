@@ -9,6 +9,7 @@ export const THREAD_LIMIT = 8;
 export const MAX_DATA_AGE_MS = 30_000;
 export const INITIAL_EMPTY_SETTLE_MS = 2_000;
 export const PRIVATE_RETRY_INTERVAL_MS = 300_000;
+export const PRIVATE_RESYNC_INTERVAL_MS = 20_000;
 const AMP_URL = "https://ampcode.com";
 const RIVET_PUBLIC_ENDPOINT =
   "https://default:pk_9tm4qz3zrMerdZXTlBRLRsmJIzSQIPH24meKBqiL6vVpscTvc4w1YPiBgymXf9Az@ampcode.com/actors";
@@ -127,10 +128,7 @@ export class BridgeCache {
 
   markStale(source) {
     if (!this.using(source)) return;
-    this.publish(
-      { ...this.value, reconnecting: true, stale: true, updatedAt: new Date().toISOString() },
-      this.value.total > 0,
-    );
+    this.value = { ...this.value, reconnecting: true, stale: true };
   }
 
   read() {
@@ -348,9 +346,17 @@ async function withTimeout(promise, timeoutMs, message) {
   }
 }
 
-async function connectPrivateOnce(cache, configuration, initialCredentials) {
+export async function connectPrivateOnce(
+  cache,
+  configuration,
+  initialCredentials,
+  {
+    createActorClient = createClient,
+    resyncIntervalMs = PRIVATE_RESYNC_INTERVAL_MS,
+  } = {},
+) {
   let credentials = initialCredentials;
-  const client = createClient({
+  const client = createActorClient({
     endpoint: RIVET_PUBLIC_ENDPOINT,
     poolName: credentials.poolName,
     devtools: false,
@@ -374,7 +380,7 @@ async function connectPrivateOnce(cache, configuration, initialCredentials) {
   let loading = true;
   let loaded = false;
   let connected = false;
-  let heartbeat;
+  let periodicResync;
   let disconnectTimer;
   let rejectFailure;
   let resyncPromise;
@@ -445,13 +451,13 @@ async function connectPrivateOnce(cache, configuration, initialCredentials) {
     await withTimeout(connection.ready, 10_000, "Amp actor ready timed out");
     await resync();
     loaded = true;
-    heartbeat = setInterval(() => {
-      if (connected) cache.updatePrivate([...threads.values()], false);
+    periodicResync = setInterval(() => {
+      if (connected) resync().catch(rejectFailure);
       else cache.markStale("user-actor");
-    }, 10_000);
+    }, resyncIntervalMs);
     await failure;
   } finally {
-    clearInterval(heartbeat);
+    clearInterval(periodicResync);
     clearTimeout(disconnectTimer);
     if (typeof offThread === "function") offThread();
     if (typeof offStatus === "function") offStatus();

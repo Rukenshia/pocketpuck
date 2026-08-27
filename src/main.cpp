@@ -22,6 +22,12 @@ constexpr uint32_t FRAME_INTERVAL_MS = 80;
 constexpr uint8_t DEPTH_LAYER_COUNT = 8;
 constexpr float FULL_ROTATION_RADIANS = 6.283185307F;
 constexpr int16_t FACE_Y_OFFSET = -14;
+constexpr uint8_t BACKLIGHT_MIN = 31;
+constexpr uint8_t BACKLIGHT_STEP = 32;
+constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
+constexpr uint32_t ENCODER_FEEDBACK_MS = 1500;
+constexpr uint32_t LONG_PRESS_MS = 700;
+constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
 constexpr uint32_t LOGO_HOLD_AFTER_SETUP_MS = 5000;
@@ -67,6 +73,33 @@ uint16_t textureColor;
 uint32_t demoStartedAt = 0;
 uint32_t lastFrameAt = 0;
 uint32_t initialSetupCompletedAt = 0;
+uint8_t backlightBrightness = 255;
+portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
+DRAM_ATTR const int8_t encoderTransitions[16] = {
+    0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0,
+};
+volatile uint8_t encoderState = 0;
+volatile int8_t encoderQuarterSteps = 0;
+volatile int8_t pendingEncoderSteps = 0;
+uint32_t lastEncoderStepAt = 0;
+bool encoderFeedbackActive = false;
+int8_t lastEncoderDirection = 0;
+bool buttonReading = false;
+bool buttonPressed = false;
+bool buttonLongHandled = false;
+uint32_t buttonChangedAt = 0;
+uint32_t buttonPressedAt = 0;
+uint32_t lastBrowserInteractionAt = 0;
+bool showingAutomaticOverview = false;
+bool automaticOverviewDismissed = false;
+
+enum class UiPage : uint8_t { Face, ThreadList, ThreadDetail };
+
+UiPage uiPage = UiPage::Face;
+uint8_t selectedThreadIndex = 0;
+AmpThreadSummary detailThread;
+bool detailUnreadAvailable = false;
+uint8_t detailThreadTotal = 0;
 
 struct FacePose {
   float gazeX = 0.0F;
@@ -78,6 +111,153 @@ struct FacePose {
   float mouthCurveY = 150.0F;
   float mouthTilt = 0.0F;
 };
+
+void IRAM_ATTR handleEncoderChange() {
+  const uint8_t newState =
+      (digitalRead(ROTARY_CLK) << 1) | digitalRead(ROTARY_DT);
+
+  portENTER_CRITICAL_ISR(&encoderMux);
+  encoderQuarterSteps += encoderTransitions[(encoderState << 2) | newState];
+  encoderState = newState;
+  if (encoderQuarterSteps >= 4) {
+    if (pendingEncoderSteps < 100) {
+      ++pendingEncoderSteps;
+    }
+    encoderQuarterSteps = 0;
+  } else if (encoderQuarterSteps <= -4) {
+    if (pendingEncoderSteps > -100) {
+      --pendingEncoderSteps;
+    }
+    encoderQuarterSteps = 0;
+  }
+  portEXIT_CRITICAL_ISR(&encoderMux);
+}
+
+void adjustBacklight(int8_t direction) {
+  const int16_t adjusted = static_cast<int16_t>(backlightBrightness) +
+                           direction * BACKLIGHT_STEP;
+  backlightBrightness =
+      static_cast<uint8_t>(std::max<int16_t>(BACKLIGHT_MIN,
+                                             std::min<int16_t>(255, adjusted)));
+  analogWrite(LCD_BL, backlightBrightness);
+  Serial.printf("Backlight: %u%%\n",
+                (backlightBrightness * 100U + 127U) / 255U);
+}
+
+void showFace() {
+  if (showingAutomaticOverview) {
+    automaticOverviewDismissed = true;
+  }
+  uiPage = UiPage::Face;
+  showingAutomaticOverview = false;
+  encoderFeedbackActive = false;
+  Serial.println("Screen: face");
+}
+
+void showThreadList(uint32_t now) {
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (stats.threadCount > 0 && selectedThreadIndex >= stats.threadCount) {
+    selectedThreadIndex = stats.threadCount - 1;
+  }
+  uiPage = UiPage::ThreadList;
+  lastBrowserInteractionAt = now;
+  encoderFeedbackActive = false;
+  Serial.println("Screen: thread list");
+}
+
+void openSelectedThread(uint32_t now) {
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (!stats.available || selectedThreadIndex >= stats.threadCount) {
+    return;
+  }
+  detailThread = stats.threads[selectedThreadIndex];
+  detailUnreadAvailable = stats.unreadAvailable;
+  detailThreadTotal = stats.threadCount;
+  uiPage = UiPage::ThreadDetail;
+  lastBrowserInteractionAt = now;
+  Serial.printf("Screen: thread %u of %u\n", selectedThreadIndex + 1,
+                stats.threadCount);
+}
+
+void navigateThreads(int8_t steps, uint32_t now, bool showDetail) {
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (!stats.available || stats.threadCount == 0) {
+    return;
+  }
+  const int16_t next = static_cast<int16_t>(selectedThreadIndex) + steps;
+  selectedThreadIndex = static_cast<uint8_t>(std::max<int16_t>(
+      0, std::min<int16_t>(stats.threadCount - 1, next)));
+  lastBrowserInteractionAt = now;
+  if (showDetail) {
+    detailThread = stats.threads[selectedThreadIndex];
+    detailUnreadAvailable = stats.unreadAvailable;
+    detailThreadTotal = stats.threadCount;
+  }
+}
+
+void handleShortPress(uint32_t now) {
+  if (uiPage == UiPage::ThreadDetail) {
+    showThreadList(now);
+  } else if (uiPage == UiPage::ThreadList) {
+    openSelectedThread(now);
+  } else if (showingAutomaticOverview) {
+    showThreadList(now);
+    openSelectedThread(now);
+  } else {
+    showThreadList(now);
+  }
+}
+
+void updateControls(uint32_t now) {
+  portENTER_CRITICAL(&encoderMux);
+  const int8_t encoderSteps = pendingEncoderSteps;
+  pendingEncoderSteps = 0;
+  portEXIT_CRITICAL(&encoderMux);
+  if (encoderSteps != 0) {
+    if (uiPage == UiPage::ThreadList || showingAutomaticOverview) {
+      if (showingAutomaticOverview) {
+        showThreadList(now);
+      }
+      navigateThreads(encoderSteps, now, false);
+    } else if (uiPage == UiPage::ThreadDetail) {
+      navigateThreads(encoderSteps, now, true);
+    } else {
+      lastEncoderDirection = encoderSteps > 0 ? 1 : -1;
+      for (int8_t step = 0; step < std::abs(encoderSteps); ++step) {
+        adjustBacklight(lastEncoderDirection);
+      }
+      lastEncoderStepAt = now;
+      encoderFeedbackActive = true;
+    }
+  }
+
+  const bool reading = digitalRead(ROTARY_SW) == LOW;
+  if (reading != buttonReading) {
+    buttonReading = reading;
+    buttonChangedAt = now;
+  }
+  if (now - buttonChangedAt >= BUTTON_DEBOUNCE_MS &&
+      buttonPressed != buttonReading) {
+    buttonPressed = buttonReading;
+    if (buttonPressed) {
+      buttonPressedAt = now;
+      buttonLongHandled = false;
+    } else if (!buttonLongHandled) {
+      handleShortPress(now);
+    }
+  }
+  if (buttonPressed && !buttonLongHandled &&
+      now - buttonPressedAt >= LONG_PRESS_MS) {
+    buttonLongHandled = true;
+    if (uiPage != UiPage::Face || showingAutomaticOverview) {
+      showFace();
+    }
+  }
+  if (uiPage != UiPage::Face &&
+      now - lastBrowserInteractionAt >= BROWSER_TIMEOUT_MS) {
+    showFace();
+  }
+}
 
 float clamp01(float value) {
   if (value < 0.0F) {
@@ -517,6 +697,16 @@ void drawThreadOverview() {
     return;
   }
 
+  if (uiPage == UiPage::ThreadList && stats.threadCount > 0) {
+    char position[8];
+    std::snprintf(position, sizeof(position), "%u/%u", selectedThreadIndex + 1,
+                  stats.threadCount);
+    canvas.setTextSize(1);
+    canvas.setTextColor(textureColor);
+    canvas.setCursor(302 - std::strlen(position) * 6, 12);
+    canvas.print(position);
+  }
+
   for (uint8_t index = 0; index < stats.threadCount; ++index) {
     const AmpThreadSummary& thread = stats.threads[index];
     const int16_t y = 39 + index * 45;
@@ -524,6 +714,10 @@ void drawThreadOverview() {
     char project[34];
     copyEllipsized(title, sizeof(title), thread.title, 23);
     copyEllipsized(project, sizeof(project), thread.project, 20);
+    if (uiPage == UiPage::ThreadList && index == selectedThreadIndex) {
+      canvas.fillRect(4, y - 4, 312, 42, faceShadowColor);
+      canvas.drawFastVLine(4, y - 4, 42, logoHighlightColor);
+    }
     if (thread.unread) {
       canvas.fillCircle(9, y + 7, 4, unreadColor);
     }
@@ -555,7 +749,94 @@ void drawThreadOverview() {
   }
 }
 
+void splitTitle(const char* title, char* first, char* second) {
+  constexpr size_t maxCharacters = 24;
+  std::snprintf(first, maxCharacters + 1, "%.*s",
+                static_cast<int>(maxCharacters), title);
+  const char* remainder = title + std::min(maxCharacters, std::strlen(title));
+  while (*remainder == ' ') {
+    ++remainder;
+  }
+  std::snprintf(second, maxCharacters + 1, "%.*s",
+                static_cast<int>(maxCharacters), remainder);
+}
+
+void drawThreadDetail() {
+  canvas.fillScreen(logoBackground);
+
+  char heading[24];
+  std::snprintf(heading, sizeof(heading), "THREAD %u OF %u",
+                selectedThreadIndex + 1, detailThreadTotal);
+  drawCenteredText(heading, 8, 2, eyeColor);
+  canvas.drawFastHLine(12, 30, 296, logoHighlightColor);
+
+  char firstLine[25];
+  char secondLine[25];
+  splitTitle(detailThread.title, firstLine, secondLine);
+  drawCenteredText(firstLine, 43, 2, eyeColor);
+  if (secondLine[0]) {
+    drawCenteredText(secondLine, 67, 2, eyeColor);
+  }
+
+  char project[32];
+  copyEllipsized(project, sizeof(project),
+                  detailThread.project[0] ? detailThread.project : "no project",
+                  28);
+  drawCenteredText(project, 103, 1, textureColor);
+
+  const char* stateLabel = threadStateLabel(detailThread.state);
+  const uint16_t stateColor = stateNeedsAttention(detailThread.state)
+                                  ? accentColor
+                                  : (std::strcmp(detailThread.state, "idle") == 0
+                                         ? eyeColor
+                                         : logoHighlightColor);
+  drawCenteredText(stateLabel, 128, 2, stateColor);
+  drawCenteredText(detailUnreadAvailable
+                       ? (detailThread.unread ? "NEW MESSAGE" : "NO NEW MESSAGES")
+                       : "MESSAGES UNKNOWN",
+                   159, 1,
+                   detailUnreadAvailable && detailThread.unread ? unreadColor
+                                                                : textureColor);
+  drawCenteredText(detailThread.executorConnected ? "EXECUTOR CONNECTED"
+                                                   : "NO EXECUTOR ATTACHED",
+                   178, 1, textureColor);
+
+  canvas.drawFastHLine(12, 204, 296, logoHighlightColor);
+  drawCenteredText("TURN: THREAD   PRESS: BACK", 218, 1, eyeColor);
+}
+
+void drawEncoderFeedback() {
+  if (!encoderFeedbackActive ||
+      millis() - lastEncoderStepAt >= ENCODER_FEEDBACK_MS) {
+    encoderFeedbackActive = false;
+    return;
+  }
+
+  constexpr int16_t panelX = 48;
+  constexpr int16_t panelY = 174;
+  constexpr int16_t panelWidth = 224;
+  constexpr int16_t panelHeight = 60;
+  constexpr int16_t barWidth = 192;
+  const int16_t filledWidth =
+      (backlightBrightness - BACKLIGHT_MIN) * barWidth /
+      (255 - BACKLIGHT_MIN);
+  char label[24];
+  std::snprintf(label, sizeof(label), "%s  %u%%",
+                lastEncoderDirection > 0 ? "BRIGHTER" : "DIMMER",
+                (backlightBrightness * 100U + 127U) / 255U);
+
+  canvas.fillRect(panelX, panelY, panelWidth, panelHeight, logoBackground);
+  canvas.drawRect(panelX, panelY, panelWidth, panelHeight, eyeColor);
+  drawCenteredText(label, panelY + 9, 2, eyeColor);
+  canvas.drawRect(panelX + 15, panelY + 40, barWidth + 2, 10, eyeColor);
+  if (filledWidth > 0) {
+    canvas.fillRect(panelX + 16, panelY + 41, filledWidth, 8,
+                    logoHighlightColor);
+  }
+}
+
 void pushCanvas() {
+  drawEncoderFeedback();
   display.startWrite();
   display.setAddrWindow(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
   display.writePixels(canvas.getBuffer(), SCREEN_PIXEL_COUNT);
@@ -590,6 +871,8 @@ void printWiring() {
   Serial.println("VCC -> 3V3, GND -> GND");
   Serial.println("DIN -> D11, CLK -> D12, CS -> D10");
   Serial.println("DC  -> D7,  RST -> D8,  BL -> D9");
+  Serial.println("Rotary CLK -> D2, DT -> D3, SW -> D4");
+  Serial.println("Rotary + -> D5, GND -> GND");
 }
 
 void initializeColors() {
@@ -629,7 +912,21 @@ void setup() {
   SPI.begin(LCD_SCK, -1, LCD_COPI, LCD_CS);
 
   pinMode(LCD_BL, OUTPUT);
-  digitalWrite(LCD_BL, HIGH);
+  analogWrite(LCD_BL, backlightBrightness);
+
+  pinMode(ROTARY_VCC, OUTPUT);
+  digitalWrite(ROTARY_VCC, HIGH);
+  pinMode(ROTARY_CLK, INPUT_PULLUP);
+  pinMode(ROTARY_DT, INPUT_PULLUP);
+  pinMode(ROTARY_SW, INPUT_PULLUP);
+  encoderState =
+      (digitalRead(ROTARY_CLK) << 1) | digitalRead(ROTARY_DT);
+  attachInterrupt(digitalPinToInterrupt(ROTARY_CLK), handleEncoderChange,
+                  CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ROTARY_DT), handleEncoderChange,
+                  CHANGE);
+  buttonReading = digitalRead(ROTARY_SW) == LOW;
+  buttonPressed = buttonReading;
 
   display.init(LCD_NATIVE_WIDTH, LCD_NATIVE_HEIGHT);
   display.setRotation(LCD_ROTATION);
@@ -651,6 +948,7 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  updateControls(now);
   updateAmpStats(now);
   if (now - lastFrameAt < FRAME_INTERVAL_MS) {
     return;
@@ -670,8 +968,19 @@ void loop() {
 
   const uint32_t mainElapsed = now - initialSetupCompletedAt -
                                LOGO_HOLD_AFTER_SETUP_MS;
-  if (mainElapsed >= OVERVIEW_INTERVAL_MS &&
-      mainElapsed % OVERVIEW_INTERVAL_MS < OVERVIEW_DURATION_MS) {
+  const bool automaticOverview =
+      mainElapsed >= OVERVIEW_INTERVAL_MS &&
+      mainElapsed % OVERVIEW_INTERVAL_MS < OVERVIEW_DURATION_MS;
+  if (!automaticOverview) {
+    automaticOverviewDismissed = false;
+  }
+  showingAutomaticOverview =
+      uiPage == UiPage::Face && automaticOverview &&
+      !automaticOverviewDismissed;
+  if (uiPage == UiPage::ThreadDetail) {
+    drawThreadDetail();
+    pushCanvas();
+  } else if (uiPage == UiPage::ThreadList || showingAutomaticOverview) {
     drawThreadOverview();
     pushCanvas();
   } else {

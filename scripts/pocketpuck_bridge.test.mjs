@@ -4,6 +4,7 @@ import {
   INITIAL_EMPTY_SETTLE_MS,
   MAX_DATA_AGE_MS,
   THREAD_LIMIT,
+  connectPrivateOnce,
   followAmpCycle,
   resolveAmpApiKey,
   statsResponse,
@@ -115,7 +116,8 @@ describe("BridgeCache", () => {
   });
 
   test("marks retained private data stale during reconnect", () => {
-    const cache = new BridgeCache();
+    let now = 100;
+    const cache = new BridgeCache(() => now);
     cache.updatePrivate([
       {
         threadId: "1",
@@ -125,11 +127,61 @@ describe("BridgeCache", () => {
         hasUnreadMessages: false,
       },
     ]);
+    const updatedAt = cache.read().updatedAt;
+    now += MAX_DATA_AGE_MS;
     cache.markStale("user-actor");
     const value = cache.read();
     expect(value.reconnecting).toBeTrue();
     expect(value.stale).toBeTrue();
     expect(value.items[0].title).toBe("Keep me");
+    expect(value.updatedAt).toBe(updatedAt);
+    now += 1;
+    expect(cache.read()).toBeNull();
+  });
+});
+
+describe("private actor liveness", () => {
+  test("periodically replaces the event map with an authoritative baseline", async () => {
+    let actionCount = 0;
+    let disposed = false;
+    const connection = {
+      ready: Promise.resolve(),
+      on: () => () => {},
+      onStatusChange: () => () => {},
+      onError: () => () => {},
+      action: async () => {
+        actionCount += 1;
+        if (actionCount === 1) {
+          return [{ threadId: "1", title: "Old", state: "idle" }];
+        }
+        if (actionCount === 2) {
+          return [{ threadId: "1", title: "Fresh", state: "working" }];
+        }
+        throw new Error("stop fixture");
+      },
+      dispose: async () => {
+        disposed = true;
+      },
+    };
+    const createActorClient = () => ({
+      userActor: {
+        get: () => ({ connect: () => connection }),
+      },
+    });
+    const cache = new BridgeCache();
+
+    await expect(
+      connectPrivateOnce(
+        cache,
+        { apiKey: "fixture" },
+        { userId: "user", wsToken: "token", poolName: "pool" },
+        { createActorClient, resyncIntervalMs: 5 },
+      ),
+    ).rejects.toThrow("stop fixture");
+
+    expect(actionCount).toBe(3);
+    expect(cache.read().items[0].title).toBe("Fresh");
+    expect(disposed).toBeTrue();
   });
 });
 
