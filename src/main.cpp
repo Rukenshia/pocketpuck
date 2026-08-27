@@ -1,6 +1,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Arduino.h>
+#include <Fonts/FreeMono9pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSerif9pt7b.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <algorithm>
@@ -53,9 +56,13 @@ constexpr bool DESIGN_REEL_ENABLED = true;
 constexpr bool DESIGN_REEL_SCRIPTED = false;
 constexpr uint8_t REEL_VERSION = 5;
 constexpr uint8_t REEL_MODE_COUNT = 4;
+constexpr uint8_t FONT_COUNT = 4;
 constexpr uint32_t REEL_OVERLAY_MS = 1800;
 const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
     "MINIMAL", "KNOCK", "BEACON", "PANIC",
+};
+const char* const FONT_NAMES[FONT_COUNT] = {
+    "CLASSIC", "MONO", "SANS", "SERIF",
 };
 // ================== END DESIGN REEL constants =============================
 
@@ -144,6 +151,9 @@ uint8_t reelModeBeforeSelection = 0;
 uint32_t reelModeChangedAt = 0;
 bool reelModeSelecting = false;
 uint32_t reelSelectionStartedAt = 0;
+uint8_t selectedFont = 0;
+uint8_t fontBeforeSelection = 0;
+bool fontSelecting = false;
 
 struct FacePose {
   float gazeX = 0.0F;
@@ -195,6 +205,7 @@ void adjustBacklight(int8_t direction) {
 void showFace() {
   uiPage = UiPage::Face;
   reelModeSelecting = false;
+  fontSelecting = false;
   encoderFeedbackActive = false;
   Serial.println("Screen: face");
 }
@@ -203,6 +214,10 @@ void showMainMenu(uint32_t now) {
   if (reelModeSelecting) {
     reelMode = reelModeBeforeSelection;
     reelModeSelecting = false;
+  }
+  if (fontSelecting) {
+    selectedFont = fontBeforeSelection;
+    fontSelecting = false;
   }
   uiPage = UiPage::MainMenu;
   mainMenuIndex = 0;
@@ -227,6 +242,16 @@ void showFacePicker(uint32_t now) {
   reelSelectionStartedAt = now;
   encoderFeedbackActive = false;
   Serial.println("Face picker: turn to preview, click to confirm");
+}
+
+void showFontPicker(uint32_t now) {
+  uiPage = UiPage::Face;
+  fontBeforeSelection = selectedFont;
+  fontSelecting = true;
+  reelModeChangedAt = now;
+  reelSelectionStartedAt = now;
+  encoderFeedbackActive = false;
+  Serial.println("Font picker: turn to preview, click to confirm");
 }
 
 void showThreadList(uint32_t now) {
@@ -278,6 +303,13 @@ void saveSelectedFace() {
   preferences.end();
 }
 
+void saveSelectedFont() {
+  Preferences preferences;
+  preferences.begin("pocketpuck", false);
+  preferences.putUChar("font", selectedFont);
+  preferences.end();
+}
+
 void saveBlinkingPreference() {
   Preferences preferences;
   preferences.begin("pocketpuck", false);
@@ -292,6 +324,7 @@ void resetSettings(uint32_t now) {
   preferences.end();
 
   reelMode = 0;
+  selectedFont = 0;
   blinkingDisabled = false;
   reelModeChangedAt = now;
   settingsResetAt = now;
@@ -305,9 +338,17 @@ void handleShortPress(uint32_t now) {
     saveSelectedFace();
     Serial.printf("Design confirmed: %u/%u %s\n", reelMode + 1,
                   REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
+  } else if (uiPage == UiPage::Face && fontSelecting) {
+    fontSelecting = false;
+    reelModeChangedAt = now;
+    saveSelectedFont();
+    Serial.printf("Font confirmed: %u/%u %s\n", selectedFont + 1,
+                  FONT_COUNT, FONT_NAMES[selectedFont]);
   } else if (uiPage == UiPage::MainMenu) {
     if (mainMenuIndex == 0) {
       showFacePicker(now);
+    } else if (mainMenuIndex == 1) {
+      showFontPicker(now);
     } else {
       showSettings(now);
     }
@@ -338,7 +379,7 @@ void updateControls(uint32_t now) {
     if (uiPage == UiPage::MainMenu) {
       const int16_t next = static_cast<int16_t>(mainMenuIndex) + encoderSteps;
       mainMenuIndex = static_cast<uint8_t>(
-          std::max<int16_t>(0, std::min<int16_t>(1, next)));
+          std::max<int16_t>(0, std::min<int16_t>(2, next)));
       lastBrowserInteractionAt = now;
     } else if (uiPage == UiPage::Settings) {
       const int16_t next =
@@ -359,6 +400,13 @@ void updateControls(uint32_t now) {
       reelModeChangedAt = now;
       Serial.printf("Design preview: %u/%u %s\n", reelMode + 1,
                     REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
+    } else if (fontSelecting) {
+      const int16_t next =
+          (static_cast<int16_t>(selectedFont) + encoderSteps) % FONT_COUNT;
+      selectedFont = static_cast<uint8_t>((next + FONT_COUNT) % FONT_COUNT);
+      reelModeChangedAt = now;
+      Serial.printf("Font preview: %u/%u %s\n", selectedFont + 1,
+                    FONT_COUNT, FONT_NAMES[selectedFont]);
     } else {
       lastEncoderDirection = encoderSteps > 0 ? 1 : -1;
       for (int8_t step = 0; step < std::abs(encoderSteps); ++step) {
@@ -710,14 +758,33 @@ void drawWorked(uint32_t elapsed) {
   drawFace(pose);
 }
 
+void setSelectedFont(uint8_t size) {
+  if (selectedFont == 0 || size == 1) {
+    canvas.setFont();
+    canvas.setTextSize(size);
+    return;
+  }
+
+  const GFXfont* fonts[] = {nullptr, &FreeMono9pt7b, &FreeSans9pt7b,
+                            &FreeSerif9pt7b};
+  canvas.setFont(fonts[selectedFont]);
+  canvas.setTextSize(std::max<uint8_t>(1, (size + 1) / 2));
+}
+
 void drawCenteredText(const char* text, int16_t y, uint8_t size,
                       uint16_t color) {
-  const int16_t width = std::strlen(text) * 6 * size;
-  canvas.setFont();
-  canvas.setTextSize(size);
+  setSelectedFont(size);
   canvas.setTextColor(color);
-  canvas.setCursor((SCREEN_WIDTH - width) / 2, y);
+  int16_t x1;
+  int16_t y1;
+  uint16_t width;
+  uint16_t height;
+  canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
+  canvas.setCursor((SCREEN_WIDTH - static_cast<int16_t>(width)) / 2 - x1,
+                   y - y1);
   canvas.print(text);
+  canvas.setFont();
+  canvas.setTextSize(1);
 }
 
 void drawMenuRow(const char* label, const char* value, int16_t y,
@@ -743,9 +810,11 @@ void drawMainMenu() {
   canvas.fillScreen(logoBackground);
   drawCenteredText("MENU", 12, 2, eyeColor);
   canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
-  drawMenuRow("SELECT FACE", REEL_MODE_NAMES[reelMode], 59,
+  drawMenuRow("SELECT FACE", REEL_MODE_NAMES[reelMode], 47,
               mainMenuIndex == 0);
-  drawMenuRow("SETTINGS", nullptr, 119, mainMenuIndex == 1);
+  drawMenuRow("SELECT FONT", FONT_NAMES[selectedFont], 103,
+              mainMenuIndex == 1);
+  drawMenuRow("SETTINGS", nullptr, 159, mainMenuIndex == 2);
   drawCenteredText("TURN: SELECT   PRESS: OPEN", 218, 1, textureColor);
 }
 
@@ -1056,6 +1125,17 @@ bool stateNeedsAttention(const char* state) {
          std::strcmp(state, "error") == 0;
 }
 
+void threadStatusLabel(const AmpThreadSummary& thread, char* label,
+                       size_t labelSize) {
+  const char* state = threadStateLabel(thread.state);
+  if (thread.shipping && std::strcmp(thread.state, "idle") != 0) {
+    std::snprintf(label, labelSize, "%s + SHIPPING", state);
+  } else {
+    std::snprintf(label, labelSize, "%s",
+                  thread.shipping ? "SHIPPING" : state);
+  }
+}
+
 void drawThreadOverview() {
   const AmpStatsSnapshot stats = getAmpStats();
   canvas.fillScreen(logoBackground);
@@ -1109,8 +1189,8 @@ void drawThreadOverview() {
     canvas.setTextColor(textureColor);
     canvas.setCursor(12, y + 23);
     canvas.print(project[0] ? project : "no project");
-    const char* stateLabel =
-        thread.shipping ? "SHIPPING" : threadStateLabel(thread.state);
+    char stateLabel[32];
+    threadStatusLabel(thread, stateLabel, sizeof(stateLabel));
     const bool active = std::strcmp(thread.state, "idle") != 0;
     canvas.setTextColor(stateNeedsAttention(thread.state)
                             ? accentColor
@@ -1178,9 +1258,8 @@ void drawThreadDetail() {
                   28);
   drawCenteredText(project, 103, 1, textureColor);
 
-  const char* stateLabel = detailThread.shipping
-                               ? "SHIPPING"
-                               : threadStateLabel(detailThread.state);
+  char stateLabel[32];
+  threadStatusLabel(detailThread, stateLabel, sizeof(stateLabel));
   const uint16_t stateColor = stateNeedsAttention(detailThread.state)
                                   ? accentColor
                                   : (detailThread.shipping
@@ -1443,11 +1522,15 @@ ReelStatus reelStatus(const ReelScene& scene) {
   ReelStatus status;
   switch (scene.phase) {
     case ReelPhase::Working:
-      if (scene.stats.shipping > 0) {
-        std::snprintf(status.text, sizeof(status.text), "SHIPPING: %u",
+      if (scene.stats.shipping > 0 && scene.stats.working > 0) {
+        std::snprintf(status.text, sizeof(status.text),
+                      "%u WORKING + %u SHIPPING", scene.stats.working,
+                      scene.stats.shipping);
+      } else if (scene.stats.shipping > 0) {
+        std::snprintf(status.text, sizeof(status.text), "%u SHIPPING",
                       scene.stats.shipping);
       } else {
-        std::snprintf(status.text, sizeof(status.text), "WORKING: %u",
+        std::snprintf(status.text, sizeof(status.text), "%u WORKING",
                       scene.stats.working);
       }
       status.color = reelGreenColor();
@@ -1546,8 +1629,10 @@ const char* reelProject(const ReelScene& scene) {
 const char* reelDetail(const ReelScene& scene) {
   switch (scene.phase) {
     case ReelPhase::Working:
-      return scene.stats.shipping > 0 ? "Ship in progress"
-                                      : "Thread is working";
+      return scene.stats.shipping > 0 && scene.stats.working > 0
+                 ? "Working and shipping"
+             : scene.stats.shipping > 0 ? "Ship in progress"
+                                        : "Thread is working";
     case ReelPhase::Message:
       return "New message in thread";
     case ReelPhase::Attention: {
@@ -2069,7 +2154,10 @@ float reelCardSettle(uint32_t elapsed);
 const char* reelEventHeadline(const ReelScene& scene) {
   switch (scene.phase) {
     case ReelPhase::Working:
-      return scene.stats.shipping > 0 ? "SHIPPING" : "WORKING";
+      return scene.stats.shipping > 0 && scene.stats.working > 0
+                 ? "WORKING + SHIPPING"
+             : scene.stats.shipping > 0 ? "SHIPPING"
+                                        : "WORKING";
     case ReelPhase::Message:
       return "NEW MESSAGE";
     case ReelPhase::Attention:
@@ -2829,17 +2917,17 @@ uint8_t reelThreadPriority(const AmpThreadSummary& thread) {
   return 1;
 }
 
-const char* reelThreadStatus(const AmpThreadSummary& thread) {
-  if (thread.shipping) {
-    return "SHIPPING";
-  }
+void reelThreadStatus(const AmpThreadSummary& thread, char* status,
+                      size_t statusSize) {
   if (stateNeedsAttention(thread.state)) {
-    return threadStateLabel(thread.state);
+    threadStatusLabel(thread, status, statusSize);
+    return;
   }
   if (thread.unread) {
-    return "NEW MESSAGE";
+    std::snprintf(status, statusSize, "%s", "NEW MESSAGE");
+    return;
   }
-  return threadStateLabel(thread.state);
+  threadStatusLabel(thread, status, statusSize);
 }
 
 uint16_t reelThreadColor(const AmpThreadSummary& thread) {
@@ -2925,8 +3013,10 @@ void drawDesignQueue(const ReelScene& scene) {
     }
     drawn[best] = true;
     const AmpThreadSummary& thread = scene.stats.threads[best];
-    drawQueueRow(34 + row * 44, reelThreadStatus(thread), thread.title,
-                 reelThreadColor(thread), row == 0);
+    char status[32];
+    reelThreadStatus(thread, status, sizeof(status));
+    drawQueueRow(34 + row * 44, status, thread.title, reelThreadColor(thread),
+                 row == 0);
   }
 }
 
@@ -3258,6 +3348,15 @@ void drawReelOverlay(uint32_t now) {
   if (now - reelModeChangedAt >= REEL_OVERLAY_MS) {
     return;
   }
+  if (fontSelecting) {
+    char fontLabel[24];
+    std::snprintf(fontLabel, sizeof(fontLabel), "%u/%u %s",
+                  selectedFont + 1, FONT_COUNT, FONT_NAMES[selectedFont]);
+    canvas.fillRoundRect(4, 3, 170, 24, 5, logoBackground);
+    canvas.drawRoundRect(4, 3, 170, 24, 5, textureColor);
+    drawCenteredText(fontLabel, 6, 2, eyeColor);
+    return;
+  }
   char label[24];
   std::snprintf(label, sizeof(label), "%u/%u %s",
                 reelMode + 1, REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
@@ -3281,8 +3380,10 @@ void drawReelOverlay(uint32_t now) {
 
 void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
   const uint32_t reelElapsed =
-      reelModeSelecting ? now - reelSelectionStartedAt : elapsed;
-  const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting;
+      (reelModeSelecting || fontSelecting) ? now - reelSelectionStartedAt
+                                          : elapsed;
+  const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting ||
+                        fontSelecting;
   const ReelScene scene = scripted ? reelScene(reelElapsed)
                                    : liveReelScene(now);
   if (!scripted &&
@@ -3417,14 +3518,18 @@ void setup() {
   preferences.begin("pocketpuck", false);
   const uint8_t savedReelVersion = preferences.getUChar("designVer", 0);
   const uint8_t savedReelMode = preferences.getUChar("design", 0);
+  const uint8_t savedFont = preferences.getUChar("font", 0);
   blinkingDisabled = preferences.getBool("noBlink", false);
   reelMode = savedReelVersion == REEL_VERSION &&
                      savedReelMode < REEL_MODE_COUNT
                  ? savedReelMode
                  : 0;
+  selectedFont = savedFont < FONT_COUNT ? savedFont : 0;
   preferences.end();
   Serial.printf("Saved design: %u/%u %s\n", reelMode + 1, REEL_MODE_COUNT,
                 REEL_MODE_NAMES[reelMode]);
+  Serial.printf("Saved font: %u/%u %s\n", selectedFont + 1, FONT_COUNT,
+                FONT_NAMES[selectedFont]);
   Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
 
   // D13 is both the default SPI clock and the Nano's yellow LED. Keep it low

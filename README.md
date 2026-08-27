@@ -55,9 +55,12 @@ On the animated face, turn the dial to adjust the LCD backlight and press it to
 open the thread list. Hold the button for 700 ms to open the main menu. Select
 **Select Face** to preview the Minimal, Knock, Beacon, and Panic designs with a
 synchronized scripted status lifecycle; pressing confirms a choice that
-persists across reboots. The **Settings** submenu can disable Puck's blinking or
-reset all settings, including the selected face, to their defaults. Outside the
-picker, the selected design uses live Amp data. Working remains ambient, new
+persists across reboots. **Select Font** similarly previews and persists Classic,
+Mono, Sans, and Serif treatments for the prominent display copy. Compact labels
+retain the pixel font so dense screens remain readable. The **Settings** submenu
+can disable Puck's blinking or reset all settings, including the selected face
+and font, to their defaults. Outside the picker, the selected design uses live
+Amp data. Working remains ambient, new
 messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.
 In the thread list, turn to select a thread and press to see its full title,
