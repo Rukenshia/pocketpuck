@@ -152,3 +152,7 @@ I sometimes start threads and then go on to do other things (definitely not proc
 
 I overestimated how much space I needed inside and I have not modelled anything in Blender for a long time. This was supposed to just take a few days and I wanted to stick to that timeline.
 The display being inset so deeply is also a result of me not having enough patience to do things properly in Blender. I've been using OnShape for most of my things recently and am just out of practice.
+
+> Why do his hands look so weird?
+
+It was my first time ever trying to even use the Blender sculpting tools and I regret everything.
