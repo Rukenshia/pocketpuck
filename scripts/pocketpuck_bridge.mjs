@@ -314,7 +314,7 @@ export class BridgeCache {
         thread.state === "error",
     ).length;
     const headlineWorking = threads.filter(
-      (thread) => ACTIVE_STATES.has(thread.state),
+      (thread) => ACTIVE_STATES.has(thread.state) && !thread.shipping,
     ).length;
     const headlineIdle = threads.filter(
       (thread) => thread.state === "idle",

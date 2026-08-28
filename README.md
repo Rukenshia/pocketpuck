@@ -55,9 +55,11 @@ On the animated face, turn the dial to adjust the LCD backlight and press it to
 open the thread list. Hold the button for 700 ms to open the main menu. Select
 **Select Face** to preview the Minimal, Knock, Beacon, and Panic designs with a
 synchronized scripted status lifecycle; pressing confirms a choice that
-persists across reboots. **Select Font** similarly previews and persists Classic,
-Mono, Sans, and Serif treatments for the prominent display copy. Compact labels
-retain the pixel font so dense screens remain readable. The **Settings** submenu
+persists across reboots. **Select Font** similarly previews and persists
+Classic, IBM Plex Mono, Chakra Petch, and VT323 treatments for the prominent
+display copy, plus Share Tech Mono, Audiowide, Rajdhani, and Quantico. Compact
+labels retain the pixel font so dense screens remain readable. The **Settings**
+submenu
 can disable Puck's blinking or reset all settings, including the selected face
 and font, to their defaults. Outside the picker, the selected design uses live
 Amp data. Working remains ambient, new
@@ -170,9 +172,10 @@ not imply that a reply is required. Confirmation dialogs represented by Amp's
 `indicator.kind: "action-required"` are normalized to `awaiting_approval` even
 when their raw execution state remains `tool_use`. `running` preserves Amp's
 compatibility mapping, including approval. The headline working, attention, and
-idle counts are state-based while unread remains an independent count that may
-overlap any of them. Executor attachment remains orthogonal and is never
-interpreted as thread health.
+idle counts are state-based, with active Ship lifecycle threads excluded from
+working so the separate shipping count does not overlap it. Unread remains an
+independent count that may overlap any of them. Executor attachment remains
+orthogonal and is never interpreted as thread health.
 
 For raw summaries, `project` is derived from the basename of `workspace.uri`,
 matching Amp's display fallback. The optional `workspace.displayName` is kept

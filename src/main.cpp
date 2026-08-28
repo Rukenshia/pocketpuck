@@ -1,9 +1,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Arduino.h>
-#include <Fonts/FreeMono9pt7b.h>
-#include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSerif9pt7b.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <algorithm>
@@ -14,6 +11,13 @@
 #include "amp_stats.h"
 #include "amp_logo.h"
 #include "display_config.h"
+#include "fonts/Audiowide9pt7b.h"
+#include "fonts/ChakraPetch9pt7b.h"
+#include "fonts/PlexMono9pt7b.h"
+#include "fonts/Quantico9pt7b.h"
+#include "fonts/Rajdhani9pt7b.h"
+#include "fonts/ShareTechMono9pt7b.h"
+#include "fonts/VT3239pt7b.h"
 
 namespace {
 
@@ -56,13 +60,14 @@ constexpr bool DESIGN_REEL_ENABLED = true;
 constexpr bool DESIGN_REEL_SCRIPTED = false;
 constexpr uint8_t REEL_VERSION = 5;
 constexpr uint8_t REEL_MODE_COUNT = 4;
-constexpr uint8_t FONT_COUNT = 4;
+constexpr uint8_t FONT_COUNT = 8;
 constexpr uint32_t REEL_OVERLAY_MS = 1800;
 const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
     "MINIMAL", "KNOCK", "BEACON", "PANIC",
 };
 const char* const FONT_NAMES[FONT_COUNT] = {
-    "CLASSIC", "MONO", "SANS", "SERIF",
+    "CLASSIC",    "PLEX",     "CHAKRA",  "TERMINAL",
+    "SHARE TECH", "AUDIOWIDE", "RAJDHANI", "QUANTICO",
 };
 // ================== END DESIGN REEL constants =============================
 
@@ -765,8 +770,13 @@ void setSelectedFont(uint8_t size) {
     return;
   }
 
-  const GFXfont* fonts[] = {nullptr, &FreeMono9pt7b, &FreeSans9pt7b,
-                            &FreeSerif9pt7b};
+  const GFXfont* fonts[] = {nullptr, &IBMPlexMono_Medium9pt7b,
+                            &ChakraPetch_SemiBold9pt7b,
+                            &VT323_Regular9pt7b,
+                            &ShareTechMono_Regular9pt7b,
+                            &Audiowide_Regular9pt7b,
+                            &Rajdhani_SemiBold9pt7b,
+                            &Quantico_Bold9pt7b};
   canvas.setFont(fonts[selectedFont]);
   canvas.setTextSize(std::max<uint8_t>(1, (size + 1) / 2));
 }
@@ -3353,8 +3363,8 @@ void drawReelOverlay(uint32_t now) {
     char fontLabel[24];
     std::snprintf(fontLabel, sizeof(fontLabel), "%u/%u %s",
                   selectedFont + 1, FONT_COUNT, FONT_NAMES[selectedFont]);
-    canvas.fillRoundRect(4, 3, 170, 24, 5, logoBackground);
-    canvas.drawRoundRect(4, 3, 170, 24, 5, textureColor);
+    canvas.fillRoundRect(4, 3, SCREEN_WIDTH - 8, 24, 5, logoBackground);
+    canvas.drawRoundRect(4, 3, SCREEN_WIDTH - 8, 24, 5, textureColor);
     drawCenteredText(fontLabel, 6, 2, eyeColor);
     return;
   }

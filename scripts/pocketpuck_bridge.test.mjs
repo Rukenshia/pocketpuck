@@ -124,6 +124,9 @@ describe("BridgeCache", () => {
     expect(value.capabilities.shipping).toBeTrue();
     expect(value.shipping).toBe(2);
     expect(value.shipped).toBe(0);
+    expect(value.working).toBe(1);
+    expect(value.headline.working).toBe(1);
+    expect(value.running).toBe(2);
     expect(value.items.find((item) => item.id === "shipping").shipping).toBeTrue();
     expect(
       value.items.find((item) => item.id === "awaiting-commit").shipping,
