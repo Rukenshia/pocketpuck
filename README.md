@@ -1,7 +1,8 @@
 # PocketPuck
 
-A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state
-and lets you know if you need to take action. It's also very cute.
+|                                                                                       |                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| <img src="docs/pocketpuck.jpg" alt="An image of the PocketPuck device" width="200" /> | A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state and lets you know if you need to take action. It's also very cute. |
 
 ## Hardware
 
@@ -25,56 +26,15 @@ Disconnect USB power while wiring. The table below refers to the Arduino Nano ES
 | `RST`         | `D8`           | Display reset          |
 | `BL`          | `D9`           | Backlight, active high |
 
-| Rotary encoder | Nano ESP32 | Purpose                |
-| -------------- | ---------- | ---------------------- |
-| `CLK`          | `D2`       | Rotation clock         |
-| `DT`           | `D3`       | Rotation direction     |
-| `SW`           | `D4`       | Push switch            |
+| Rotary encoder | Nano ESP32 | Purpose                                                                |
+| -------------- | ---------- | ---------------------------------------------------------------------- |
+| `CLK`          | `D2`       | Rotation clock                                                         |
+| `DT`           | `D3`       | Rotation direction                                                     |
+| `SW`           | `D4`       | Push switch                                                            |
 | `+`            | `D5`       | Module pull-up voltage (you should connect this to 3V3 but I was lazy) |
-| `GND`          | `GND`      | Common ground          |
+| `GND`          | `GND`      | Common ground                                                          |
 
-PocketPuck holds `D5` high at 3.3 V to supply the resistor-only encoder module's
-small pull-up current, leaving the Nano's `3V3` pin available for the display.
-Do not use this arrangement for a module with a motor, lamp, or other substantial
-load, and never connect the encoder's `+` to 5 V. PocketPuck also enables the
-Nano's internal pull-up resistors. If clockwise rotation lowers brightness on
-your encoder, swap its `CLK` and `DT` wires.
-
-On the animated face, turn the dial to adjust the LCD backlight and press it to
-open the thread list. Hold the button for 700 ms to open the main menu. Select
-**Select Face** to preview the Minimal, Beacon, and Panic designs with a
-synchronized scripted status lifecycle; pressing confirms a choice that
-persists across reboots. Prominent display copy uses IBM Plex Mono, while
-compact labels retain the pixel font so dense screens remain readable. The
-**Settings** submenu can enable Puck's blinking, open **Debug Face**, or reset
-all settings to their defaults. Debug Face holds the
-currently selected face on a dial-selected fixture state—Idle, Working, Message,
-Attention, or All Clear. Each dial change plays that state's normal transition,
-then holds it instead of advancing on the normal timer; press the dial to return
-to Settings. Outside the picker, the selected design uses live
-Amp data. Working remains ambient, new
-messages are noticeable, and actionable
-states receive the strongest treatment while directing the user back to Amp.
-Every completed ship uses the full-screen Liftoff rocket animation regardless
-of the selected face.
-The thread list shows four rows at a time. Turn to navigate up to eight recent
-threads; the selected row expands to show its wrapped title, resolved Amp
-project name, state, and unread marker. Press for a dedicated detail view, turn
-there to move between threads, short-press to return to the list, or hold the
-button for 700 ms to return directly to the face. Thread browsing stays open
-until you leave it.
-
-The display is write-only, so PocketPuck remaps the hardware SPI clock to the
-otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
-with the default SPI clock and would flash on every display update if `CLK`
-were connected there.
-
-The Nano ESP32 GPIOs use 3.3 V logic, so the display is powered from `3V3` to
-keep its supply and logic voltages consistent. Do not connect a GPIO to 5 V.
-The display does not return data, which is why its normal `CIPO` function is
-not needed and `D12` can be reused as the clock output.
-
-## Build and upload
+### Build and upload
 
 [PlatformIO](https://platformio.org/) is the only required development tool.
 
@@ -95,20 +55,22 @@ by PlatformIO.
 
 ## Live Amp stats
 
-Amp's supported External API does not currently expose live thread execution
-state. PocketPuck therefore uses a small bridge which prefers Amp's private
-GLOBAL user-actor summaries and falls back to the authenticated `amp top`
-stream. The Amp API key remains on the bridge host rather than being copied to
-the microcontroller.
+Amp's API does not support all the thread information that I wanted to display.
+PocketPuck therefor uses Rivet endpoint directly to get more detailed information,
+meaning this can break at any time since there is no published API contract for this.
+The bridge has a fallback to the `amp top` command, which is more stable but less detailed.
 
-On the Raspberry Pi, install dependencies with the standalone Bun runtime. Bun
-1.4.0 on Linux ARM64 is the tested deployment runtime:
+The bridge should be deployed on in the same network as PocketPuck. The server
+serves traffic over HTTP on port 8765 by default. It is written in [Bun](https://bun.sh/).
+
+I personally run this on a Raspberry Pi, where I also run Amp, meaning that I can use my
+existing credentials. You can provide a custom API key using the `AMP_API_KEY` environment variable.
 
 ```sh
 $HOME/.bun/bin/bun install --frozen-lockfile --production --ignore-scripts
 ```
 
-Start the single bridge service and query it with:
+Start the bridge service and query it with:
 
 ```sh
 $HOME/.bun/bin/bun scripts/pocketpuck_bridge.mjs \
@@ -116,162 +78,11 @@ $HOME/.bun/bin/bun scripts/pocketpuck_bridge.mjs \
 curl http://localhost:8765/stats
 ```
 
-The Bun process owns the HTTP endpoint, detailed user-actor connection, cache,
-reconnects, and the degraded `amp top --stream-jsonl` child process. No second
-service is required.
+By default, the bridge will try to find credentials in
 
-Detailed mode targets hosted production Amp. The bridge first uses a nonempty
-`AMP_API_KEY`; otherwise it reads Amp's existing production key from
-`$XDG_DATA_HOME/amp/secrets.json` or
-`$HOME/.local/share/amp/secrets.json`. The store must be a same-user regular
-file with no group/world access, and its exact
-`apiKey@https://ampcode.com/` entry must contain a nonempty string. Native Amp
-keychain storage cannot be read by the bridge, so those installations must use
-the environment override. No duplicate environment file is needed for the
-normal Pi setup.
-
-The production bootstrap URL and public Rivet actor routing endpoint are fixed
-in the bridge. The API key is never logged or written. `AMP_COMMAND`,
-`POCKETPUCK_HOST`, and `POCKETPUCK_PORT` provide environment alternatives to
-the command-line flags and defaults.
-
-With the private integration configured, the response has this shape (the
-`items` list is bounded to eight summaries):
-
-```json
-{
-  "schemaVersion": 2,
-  "source": "user-actor",
-  "running": 4,
-  "idle": 10,
-  "states": {
-    "idle": 10,
-    "compacting": 0,
-    "working": 0,
-    "streaming": 1,
-    "tool_use": 0,
-    "running_tools": 2,
-    "awaiting_approval": 1,
-    "error": 0,
-    "unknown": 0
-  },
-  "unread": 2,
-  "shipping": 1,
-  "shipped": 0,
-  "executorConnected": 6,
-  "headline": { "working": 3, "needsAttention": 1, "idle": 10 },
-  "items": [
-    {
-      "id": "T-123",
-      "title": "Build PocketPuck UI",
-      "project": "pocketpuck",
-      "projectResolved": true,
-      "state": "tool_use",
-      "executorConnected": true,
-      "unread": false,
-      "shipping": true,
-      "shipped": false
-    }
-  ],
-  "updatedAt": "2026-08-26T21:02:57.697Z",
-  "reconnecting": false,
-  "stale": false
-}
-```
-
-The bridge keeps one GLOBAL user-actor connection, loads a recent baseline,
-applies `threadStatusUpdated` events, and refreshes the authoritative baseline
-every 20 seconds so a silent event subscription cannot preserve old data
-indefinitely. Archived threads are excluded. During Ship completion
-confirmation and the bounded shipped-notification window, a retained summary
-is treated as idle so its last execution state cannot briefly reappear as
-working. It exposes Amp's detailed
-`idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
-`awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
-separately as `unread` and shown as a blue marker in the thread overview.
-Amp's Ship UI lifecycle is exposed independently as `shipping`. The user-actor
-summary identifies candidates but does not carry this field, so the bridge
-checks recent and active candidates with `amp threads export`; both the
-`shipping` and `awaiting_commit` stages count as active. Puck shows that state
-in the thread browser. A disappearing Ship state alone is not success because
-pausing also clears it. The bridge emits a bounded `shipped` event, and Puck
-announces **Shipped**, only after the thread ends normally and Amp applies its
-system `shipped` label. This also covers Ship workflows that deploy or perform
-another external action without creating a commit. It works with custom Ship
-prompts and tools because it follows Amp's Ship UI lifecycle rather than
-recognizing tool names.
-`needsAttention` includes only approval-blocked and errored threads; unread does
-not imply that a reply is required. Confirmation dialogs represented by Amp's
-`indicator.kind: "action-required"` are normalized to `awaiting_approval` even
-when their raw execution state remains `tool_use`. `running` preserves Amp's
-compatibility mapping, including approval. The headline working, attention, and
-idle counts are state-based, with active Ship lifecycle threads excluded from
-working so the separate shipping count does not overlap it. Unread remains an
-independent count that may overlap any of them. Executor attachment remains
-orthogonal and is never interpreted as thread health.
-
-The user-actor summary carries a project ID but not its human-readable name.
-The bridge resolves IDs once per private connection with
-`amp projects list --json`, emits the name as `project`, and marks it with
-`projectResolved: true`. If that lookup is unavailable, the repository basename
-from `workspace.uri` remains a clearly marked fallback instead of being
-presented as an Amp project name. Threads without an Amp project remain
-distinguishable from both. The optional `workspace.displayName` is kept
-separately as `workspaceDisplayName` rather than silently substituting it.
-
-If automatic discovery fails, private authentication fails, its response shape
-changes, or retries are exhausted, the Bun bridge automatically spawns `amp top
---stream-jsonl`. Discovery failure messages contain only a non-secret invariant,
-and the bridge retries discovery every five minutes. Fallback responses identify
-`source: "amp-top"`, preserve
-the verified `working × executorConnected` counts, and set `states` and `unread`
-to `null` rather than pretending those details are zero. They can only label
-items `WORKING` or `IDLE`. The experimental display-oriented `status` field is
-never parsed. Neither source calls generic idle “waiting for input.” The bridge
-retries private mode every five minutes and switches sources only after a full
-snapshot; streams are never merged.
-
-The bridge settles an initial empty stream event for two seconds, returns HTTP
-503 until data is ready, and returns 503 whenever no event or successful
-baseline refresh has arrived for 30 seconds. Aggregate transport reconnecting
-state causes firmware to hide retained counts rather than displaying them as
-current; marking a retained snapshot stale does not renew its freshness timer.
-
-Configure the firmware with the Pi's LAN address:
-
-```sh
-cp include/network_config.example.h include/network_config.h
-```
-
-Edit `include/network_config.h`, then build and upload normally. This local
-file is ignored by git. The display retries Wi-Fi every 15 seconds and polls
-the bridge every 10 seconds. Startup shows the animated logo for five seconds,
-then starts Wi-Fi and keeps the connecting face visible for at least two seconds
-and until Wi-Fi connects or the bounded 20-second attempt expires. It then shows
-the face even when degraded, with clear states for setup, Wi-Fi,
-bridge reconnects, and no threads. Pressing the rotary encoder opens an overview
-with up to eight dial-navigable threads and four visible rows. The selected row
-expands in place, but every card title uses the same readable type size and wraps
-to a measured second line when needed. Resolved project names appear without a
-prefix; unresolved repository fallbacks leave that line empty. Every row keeps
-its plain-language state, shape-coded status mark, and blue unread marker.
-**Press for info** lives in the header. The list and detail view remain open
-until the button changes pages; only menus retain an inactivity timeout. The
-header reports additional summaries that are not shown.
-
-The bridge binds to `0.0.0.0` by default so the microcontroller can reach it on
-the LAN. Do not expose port 8765 to the public Internet. Use `--host` to bind a
-specific LAN address if preferred.
-
-Run the bridge fixture tests with:
-
-```sh
-bun install --frozen-lockfile --ignore-scripts
-bun test scripts/pocketpuck_bridge.test.mjs
-```
-
-These same commands work from any Mac checkout when standalone Bun is on
-`PATH`; no repository path is compiled into the bridge.
+- `$HOME/.config/amp/secrets.json`
+- `$XDG_CONFIG_HOME/amp/secrets.json`
+- `$HOME/.local/share/amp/secrets.json`
 
 To run the bridge as a systemd user service, use a unit like this (adjust the
 repository path if the checkout is not `%h/pocketpuck`):
@@ -291,3 +102,13 @@ Restart=always
 [Install]
 WantedBy=default.target
 ```
+
+## Connecting Your PocketPuck to the Bridge
+
+Copy the example network configuration file to a local file that you can edit:
+
+```sh
+cp include/network_config.example.h include/network_config.h
+```
+
+Edit the `POCKETPUCK_WIFI_SSID`, `POCKETPUCK_WIFI_PASSWORD`, and `POCKETPUCK_STATS_URL` (for example `http://192.168.178.123:8765/stats`) values accordingly. Note that most ESP32 only support 2.4GHz WiFi networks, so make sure your router is configured correctly.
