@@ -33,7 +33,7 @@ constexpr uint8_t BACKLIGHT_STEP = 32;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
 constexpr uint32_t ENCODER_FEEDBACK_MS = 1500;
 constexpr uint32_t LONG_PRESS_MS = 700;
-constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
+constexpr uint32_t MENU_TIMEOUT_MS = 30000;
 constexpr uint32_t NOTIFICATION_DURATION_MS = 4200;
 constexpr uint32_t SHIPPED_NOTIFICATION_DURATION_MS =
     NOTIFICATION_DURATION_MS + 5000;
@@ -98,6 +98,9 @@ uint16_t mouthColor;
 uint16_t accentColor;
 uint16_t unreadColor;
 uint16_t textureColor;
+uint16_t threadCardColor;
+uint16_t workingColor;
+uint16_t shippingColor;
 
 uint32_t demoStartedAt = 0;
 uint32_t lastFrameAt = 0;
@@ -148,12 +151,13 @@ struct PendingNotification {
 UiPage uiPage = UiPage::Face;
 uint8_t mainMenuIndex = 0;
 uint8_t settingsMenuIndex = 0;
-bool blinkingDisabled = false;
+bool blinkingEnabled = false;
 uint32_t settingsResetAt = 0;
 bool debugFaceActive = false;
 uint8_t debugFacePhase = 0;
 uint32_t debugFacePhaseChangedAt = 0;
 uint8_t selectedThreadIndex = 0;
+uint8_t firstVisibleThreadIndex = 0;
 char selectedThreadId[AMP_THREAD_ID_LENGTH] = "";
 char selectedThreadTitle[AMP_THREAD_TITLE_LENGTH] = "";
 AmpThreadSummary detailThread;
@@ -305,6 +309,22 @@ void rememberSelectedThread(const AmpThreadSummary& thread) {
                 thread.title);
 }
 
+void keepSelectedThreadVisible(uint8_t threadCount) {
+  constexpr uint8_t visibleThreads = 4;
+  if (threadCount <= visibleThreads) {
+    firstVisibleThreadIndex = 0;
+    return;
+  }
+  if (selectedThreadIndex < firstVisibleThreadIndex) {
+    firstVisibleThreadIndex = selectedThreadIndex;
+  } else if (selectedThreadIndex >=
+             firstVisibleThreadIndex + visibleThreads) {
+    firstVisibleThreadIndex = selectedThreadIndex - visibleThreads + 1;
+  }
+  firstVisibleThreadIndex = std::min<uint8_t>(
+      firstVisibleThreadIndex, threadCount - visibleThreads);
+}
+
 bool reconcileSelectedThread(const AmpStatsSnapshot& stats) {
   if (!stats.available || stats.threadCount == 0) {
     return false;
@@ -317,6 +337,7 @@ bool reconcileSelectedThread(const AmpStatsSnapshot& stats) {
                                             stats.threadCount - 1);
     rememberSelectedThread(stats.threads[selectedThreadIndex]);
   }
+  keepSelectedThreadVisible(stats.threadCount);
   return true;
 }
 
@@ -353,6 +374,7 @@ void navigateThreads(int8_t steps, uint32_t now, bool showDetail) {
   selectedThreadIndex = static_cast<uint8_t>(std::max<int16_t>(
       0, std::min<int16_t>(stats.threadCount - 1, next)));
   rememberSelectedThread(stats.threads[selectedThreadIndex]);
+  keepSelectedThreadVisible(stats.threadCount);
   lastBrowserInteractionAt = now;
   if (showDetail) {
     detailThread = stats.threads[selectedThreadIndex];
@@ -388,7 +410,8 @@ void saveSelectedFace() {
 void saveBlinkingPreference() {
   Preferences preferences;
   preferences.begin("pocketpuck", false);
-  preferences.putBool("noBlink", blinkingDisabled);
+  preferences.putBool("blink", blinkingEnabled);
+  preferences.remove("noBlink");
   preferences.end();
 }
 
@@ -399,7 +422,7 @@ void resetSettings(uint32_t now) {
   preferences.end();
 
   reelMode = DEFAULT_REEL_MODE;
-  blinkingDisabled = false;
+  blinkingEnabled = false;
   debugFaceActive = false;
   debugFacePhase = 0;
   debugFacePhaseChangedAt = now;
@@ -426,9 +449,9 @@ void handleShortPress(uint32_t now) {
   } else if (uiPage == UiPage::Settings) {
     lastBrowserInteractionAt = now;
     if (settingsMenuIndex == 0) {
-      blinkingDisabled = !blinkingDisabled;
+      blinkingEnabled = !blinkingEnabled;
       saveBlinkingPreference();
-      Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
+      Serial.printf("Blinking: %s\n", blinkingEnabled ? "enabled" : "disabled");
     } else if (settingsMenuIndex == 1) {
       showDebugFace(now);
     } else {
@@ -515,8 +538,8 @@ void updateControls(uint32_t now) {
       showMainMenu(now);
     }
   }
-  if (uiPage != UiPage::Face &&
-      now - lastBrowserInteractionAt >= BROWSER_TIMEOUT_MS) {
+  if ((uiPage == UiPage::MainMenu || uiPage == UiPage::Settings) &&
+      now - lastBrowserInteractionAt >= MENU_TIMEOUT_MS) {
     showFace();
   }
 }
@@ -541,7 +564,7 @@ float mix(float from, float to, float amount) {
 }
 
 float blinkAt(uint32_t elapsed, uint32_t center, uint32_t duration = 240) {
-  if (blinkingDisabled) {
+  if (!blinkingEnabled) {
     return 1.0F;
   }
   const int32_t distance =
@@ -944,10 +967,10 @@ void drawSettings(uint32_t now) {
   canvas.fillScreen(logoBackground);
   drawCenteredText("SETTINGS", 12, 2, eyeColor);
   canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
-  drawMenuRow("DISABLE BLINKING", nullptr, 47, settingsMenuIndex == 0);
+  drawMenuRow("ENABLE BLINKING", nullptr, 47, settingsMenuIndex == 0);
   canvas.drawRect(278, 62, 18, 18,
-                  blinkingDisabled ? logoHighlightColor : eyeColor);
-  if (blinkingDisabled) {
+                  blinkingEnabled ? logoHighlightColor : eyeColor);
+  if (blinkingEnabled) {
     drawThickLine(281, 70, 286, 76, logoHighlightColor, 3);
     drawThickLine(286, 76, 294, 65, logoHighlightColor, 3);
   }
@@ -1308,7 +1331,7 @@ const char* threadStateLabel(const char* state) {
     return "THINKING";
   }
   if (std::strcmp(state, "streaming") == 0) {
-    return "STREAMING";
+    return "RESPONDING";
   }
   if (std::strcmp(state, "tool_use") == 0) {
     return "USING TOOL";
@@ -1317,7 +1340,7 @@ const char* threadStateLabel(const char* state) {
     return "RUNNING TOOLS";
   }
   if (std::strcmp(state, "awaiting_approval") == 0) {
-    return "AWAITING APPROVAL";
+    return "APPROVAL NEEDED";
   }
   if (std::strcmp(state, "error") == 0) {
     return "ERROR";
@@ -1335,21 +1358,255 @@ bool stateNeedsAttention(const char* state) {
 
 void threadStatusLabel(const AmpThreadSummary& thread, char* label,
                        size_t labelSize) {
-  const char* state = threadStateLabel(thread.state);
-  if (thread.shipping && std::strcmp(thread.state, "idle") != 0) {
-    std::snprintf(label, labelSize, "%s + SHIPPING", state);
-  } else {
-    std::snprintf(label, labelSize, "%s",
-                  thread.shipping ? "SHIPPING" : state);
+  const char* status = stateNeedsAttention(thread.state)
+                           ? threadStateLabel(thread.state)
+                           : (thread.shipped
+                                  ? "SHIPPED"
+                                  : (thread.shipping
+                                         ? "SHIPPING"
+                                         : threadStateLabel(thread.state)));
+  std::snprintf(label, labelSize, "%s", status);
+}
+
+uint16_t threadStatusColor(const AmpThreadSummary& thread) {
+  if (stateNeedsAttention(thread.state)) {
+    return accentColor;
   }
+  if (thread.shipped) {
+    return workingColor;
+  }
+  if (thread.shipping) {
+    return shippingColor;
+  }
+  if (stateIsWorking(thread.state)) {
+    return workingColor;
+  }
+  return std::strcmp(thread.state, "idle") == 0 ? textureColor : eyeColor;
+}
+
+void drawThreadStatusMark(const AmpThreadSummary& thread, int16_t centerX,
+                          int16_t centerY, uint8_t radius,
+                          uint16_t background) {
+  const uint16_t color = threadStatusColor(thread);
+  if (stateNeedsAttention(thread.state)) {
+    canvas.fillRoundRect(centerX - radius, centerY - radius, radius * 2 + 1,
+                         radius * 2 + 1, std::max<uint8_t>(1, radius / 3),
+                         color);
+    if (radius >= 6) {
+      canvas.drawFastVLine(centerX, centerY - radius + 3, radius, background);
+      canvas.fillCircle(centerX, centerY + radius - 3, 1, background);
+    }
+    return;
+  }
+  if (thread.shipping || thread.shipped) {
+    canvas.fillTriangle(centerX, centerY - radius, centerX + radius, centerY,
+                        centerX, centerY + radius, color);
+    canvas.fillTriangle(centerX, centerY - radius, centerX - radius, centerY,
+                        centerX, centerY + radius, color);
+    return;
+  }
+  if (stateIsWorking(thread.state)) {
+    canvas.fillCircle(centerX, centerY, radius, color);
+    if (radius >= 5) {
+      canvas.fillCircle(centerX, centerY, radius / 2, background);
+    }
+    return;
+  }
+  if (std::strcmp(thread.state, "idle") == 0) {
+    canvas.drawCircle(centerX, centerY, radius, color);
+    return;
+  }
+  canvas.drawRect(centerX - radius, centerY - radius, radius * 2 + 1,
+                  radius * 2 + 1, color);
+}
+
+void drawThreadHeader(const char* label, const char* instruction,
+                      uint8_t position, uint8_t count, uint16_t total) {
+  drawSelectedText(label, 8, 6, 2, eyeColor);
+  drawCenteredText(instruction, 10, 1, textureColor);
+  if (count > 0) {
+    char counter[20];
+    if (total > count) {
+      std::snprintf(counter, sizeof(counter), "%u/%u +%u", position, count,
+                    total - count);
+    } else {
+      std::snprintf(counter, sizeof(counter), "%u/%u", position, count);
+    }
+    const uint16_t width = selectedTextWidth(counter, 2);
+    drawSelectedText(counter, SCREEN_WIDTH - 8 - width, 6, 2, textureColor);
+  }
+  canvas.drawFastHLine(4, 27, 312, logoHighlightColor);
+}
+
+void splitTitle(const char* title, char* first, size_t firstSize, char* second,
+                size_t secondSize, size_t maxCharacters) {
+  const size_t firstLimit = std::min(maxCharacters, firstSize - 1);
+  const size_t secondLimit = std::min(maxCharacters, secondSize - 1);
+  const size_t length = std::strlen(title);
+  if (length <= firstLimit) {
+    std::snprintf(first, firstSize, "%s", title);
+    second[0] = '\0';
+    return;
+  }
+  size_t split = firstLimit;
+  const size_t minimumWordSplit = firstLimit / 2;
+  while (split > minimumWordSplit && title[split] != ' ') {
+    --split;
+  }
+  if (split == minimumWordSplit && title[split] != ' ') {
+    split = firstLimit;
+  }
+  std::snprintf(first, firstSize, "%.*s", static_cast<int>(split), title);
+  const char* remainder = title + split;
+  while (*remainder == ' ') {
+    ++remainder;
+  }
+  copyEllipsized(second, secondSize, remainder, secondLimit);
+}
+
+void copyThreadContext(const AmpThreadSummary& thread, char* output,
+                       size_t outputSize, size_t maxCharacters) {
+  if (thread.projectResolved) {
+    copyEllipsized(output, outputSize, thread.project, maxCharacters);
+  } else {
+    output[0] = '\0';
+  }
+}
+
+bool splitThreadTitleToFit(const char* title, uint8_t size,
+                           uint16_t maxWidth, char* first, char* second) {
+  const size_t length = std::strlen(title);
+  for (uint8_t pass = 0; pass < 2; ++pass) {
+    size_t bestSplit = 0;
+    size_t bestSecondStart = 0;
+    size_t bestBalance = length + 1;
+    for (size_t split = 1; split < length; ++split) {
+      if (pass == 0 && title[split] != ' ') continue;
+      size_t secondStart = split;
+      if (title[split] == ' ') {
+        while (secondStart < length && title[secondStart] == ' ') {
+          ++secondStart;
+        }
+      }
+      if (secondStart >= length) continue;
+
+      char candidateFirst[AMP_THREAD_TITLE_LENGTH];
+      char candidateSecond[AMP_THREAD_TITLE_LENGTH];
+      std::snprintf(candidateFirst, sizeof(candidateFirst), "%.*s",
+                    static_cast<int>(split), title);
+      std::snprintf(candidateSecond, sizeof(candidateSecond), "%s",
+                    title + secondStart);
+      if (selectedTextWidth(candidateFirst, size) > maxWidth ||
+          selectedTextWidth(candidateSecond, size) > maxWidth) {
+        continue;
+      }
+      const size_t secondLength = length - secondStart;
+      const size_t balance = split > secondLength ? split - secondLength
+                                                   : secondLength - split;
+      if (balance < bestBalance) {
+        bestSplit = split;
+        bestSecondStart = secondStart;
+        bestBalance = balance;
+      }
+    }
+    if (bestSplit > 0) {
+      std::snprintf(first, AMP_THREAD_TITLE_LENGTH, "%.*s",
+                    static_cast<int>(bestSplit), title);
+      std::snprintf(second, AMP_THREAD_TITLE_LENGTH, "%s",
+                    title + bestSecondStart);
+      return true;
+    }
+  }
+  return false;
+}
+
+void drawThreadTitleLine(const char* text, int16_t x, int16_t y, uint8_t size,
+                         uint16_t color, bool centered) {
+  if (centered) {
+    drawCenteredText(text, y, size, color);
+  } else {
+    drawSelectedText(text, x, y, size, color);
+  }
+}
+
+void drawThreadTitle(const char* title, int16_t x, int16_t rowY,
+                     uint16_t maxWidth, bool centered = false) {
+  char firstLine[AMP_THREAD_TITLE_LENGTH];
+  char secondLine[AMP_THREAD_TITLE_LENGTH];
+  if (selectedTextWidth(title, 2) <= maxWidth) {
+    drawThreadTitleLine(title, x, rowY + 36, 2, eyeColor, centered);
+    return;
+  }
+  if (splitThreadTitleToFit(title, 2, maxWidth, firstLine, secondLine)) {
+    drawThreadTitleLine(firstLine, x, rowY + 27, 2, eyeColor, centered);
+    drawThreadTitleLine(secondLine, x, rowY + 51, 2, eyeColor, centered);
+    return;
+  }
+
+  copyEllipsized(firstLine, sizeof(firstLine), title, 25);
+  drawThreadTitleLine(firstLine, x, rowY + 36, 2, eyeColor, centered);
+}
+
+void drawSelectedThreadRow(const AmpThreadSummary& thread, int16_t y) {
+  constexpr int16_t rowHeight = 79;
+  const uint16_t statusColor = threadStatusColor(thread);
+  canvas.fillRoundRect(4, y, 312, rowHeight, 6, threadCardColor);
+  canvas.drawRoundRect(4, y, 312, rowHeight, 6, statusColor);
+  canvas.fillRoundRect(4, y, 7, rowHeight, 3, statusColor);
+
+  char stateLabel[32];
+  threadStatusLabel(thread, stateLabel, sizeof(stateLabel));
+  const uint16_t stateWidth = selectedTextWidth(stateLabel, 2);
+  const int16_t stateX = SCREEN_WIDTH - 10 - stateWidth;
+  drawThreadStatusMark(thread, 16, y + 12, 4, threadCardColor);
+  drawSelectedText(stateLabel, stateX, y + 4, 2, statusColor);
+
+  int16_t contextRight = stateX - 8;
+  if (thread.unread) {
+    canvas.fillRect(stateX - 15, y + 8, 8, 8, unreadColor);
+    contextRight -= 15;
+  }
+  const size_t contextCharacters = static_cast<size_t>(
+      std::max<int16_t>(3, (contextRight - 26) / 6));
+  char context[AMP_THREAD_PROJECT_LENGTH + 12];
+  copyThreadContext(thread, context, sizeof(context), contextCharacters);
+  drawSelectedText(context, 26, y + 8, 1, textureColor);
+
+  drawThreadTitle(thread.title, 18, y, 290);
+}
+
+void drawCompactThreadRow(const AmpThreadSummary& thread, int16_t y) {
+  constexpr int16_t rowHeight = 43;
+  const uint16_t statusColor = threadStatusColor(thread);
+  canvas.fillRect(4, y, 4, rowHeight - 1, statusColor);
+  drawThreadStatusMark(thread, 16, y + 12, 4, logoBackground);
+
+  char title[28];
+  copyEllipsized(title, sizeof(title), thread.title, thread.unread ? 23 : 25);
+  drawSelectedText(title, 27, y + 3, 2, eyeColor);
+  if (thread.unread) {
+    canvas.fillRect(302, y + 7, 8, 8, unreadColor);
+  }
+
+  char stateLabel[32];
+  threadStatusLabel(thread, stateLabel, sizeof(stateLabel));
+  const uint16_t stateWidth = selectedTextWidth(stateLabel, 1);
+  const int16_t stateX = SCREEN_WIDTH - 10 - stateWidth;
+  drawSelectedText(stateLabel, stateX, y + 29, 1, statusColor);
+  const size_t contextCharacters = static_cast<size_t>(
+      std::max<int16_t>(3, (stateX - 31) / 6));
+  char context[AMP_THREAD_PROJECT_LENGTH + 12];
+  copyThreadContext(thread, context, sizeof(context), contextCharacters);
+  drawSelectedText(context, 27, y + 29, 1, textureColor);
+  canvas.drawFastHLine(4, y + rowHeight - 1, 312, logoHighlightColor);
 }
 
 void drawThreadOverview() {
   const AmpStatsSnapshot stats = getAmpStats();
   reconcileSelectedThread(stats);
   canvas.fillScreen(logoBackground);
-  drawCenteredText("THREAD OVERVIEW", 8, 2, eyeColor);
-  canvas.drawFastHLine(12, 30, 296, logoHighlightColor);
+  drawThreadHeader("THREADS", "PRESS FOR INFO", selectedThreadIndex + 1,
+                   stats.available ? stats.threadCount : 0, stats.total);
 
   if (!stats.available) {
     const char* status = !stats.configured
@@ -1361,135 +1618,60 @@ void drawThreadOverview() {
     drawCenteredText(status, 108, 2, eyeColor);
     return;
   }
-  if (stats.total == 0) {
+  if (stats.total == 0 || stats.threadCount == 0) {
     drawCenteredText("NO THREADS", 108, 2, eyeColor);
     return;
   }
 
-  if (uiPage == UiPage::ThreadList && stats.threadCount > 0) {
-    char position[8];
-    std::snprintf(position, sizeof(position), "%u/%u", selectedThreadIndex + 1,
-                  stats.threadCount);
-    canvas.setTextSize(1);
-    canvas.setTextColor(textureColor);
-    canvas.setCursor(302 - std::strlen(position) * 6, 12);
-    canvas.print(position);
-  }
-
-  for (uint8_t index = 0; index < stats.threadCount; ++index) {
-    const AmpThreadSummary& thread = stats.threads[index];
-    const int16_t y = 39 + index * 45;
-    char title[28];
-    char project[34];
-    copyEllipsized(title, sizeof(title), thread.title, 23);
-    copyEllipsized(project, sizeof(project), thread.project, 20);
-    if (uiPage == UiPage::ThreadList && index == selectedThreadIndex) {
-      canvas.fillRect(4, y - 4, 312, 42, faceShadowColor);
-      canvas.drawFastVLine(4, y - 4, 42, logoHighlightColor);
+  constexpr uint8_t visibleThreads = 4;
+  const uint8_t end = std::min<uint8_t>(
+      stats.threadCount, firstVisibleThreadIndex + visibleThreads);
+  int16_t y = 31;
+  for (uint8_t index = firstVisibleThreadIndex; index < end; ++index) {
+    if (index == selectedThreadIndex) {
+      drawSelectedThreadRow(stats.threads[index], y);
+      y += 79;
+    } else {
+      drawCompactThreadRow(stats.threads[index], y);
+      y += 43;
     }
-    if (thread.unread) {
-      canvas.fillCircle(9, y + 7, 4, unreadColor);
-    }
-    canvas.setTextSize(2);
-    canvas.setTextColor(eyeColor);
-    canvas.setCursor(20, y);
-    canvas.print(title);
-    canvas.setTextSize(1);
-    canvas.setTextColor(textureColor);
-    canvas.setCursor(12, y + 23);
-    canvas.print(project[0] ? project : "no project");
-    char stateLabel[32];
-    threadStatusLabel(thread, stateLabel, sizeof(stateLabel));
-    const bool active = std::strcmp(thread.state, "idle") != 0;
-    canvas.setTextColor(stateNeedsAttention(thread.state)
-                            ? accentColor
-                            : (thread.shipping || active ? logoHighlightColor
-                                                         : eyeColor));
-    canvas.setCursor(302 - std::strlen(stateLabel) * 6, y + 23);
-    canvas.print(stateLabel);
   }
-
-  if (stats.total > stats.threadCount) {
-    char more[18];
-    std::snprintf(more, sizeof(more), "+%u MORE",
-                  stats.total - stats.threadCount);
-    canvas.setTextSize(1);
-    canvas.setTextColor(textureColor);
-    canvas.setCursor(308 - std::strlen(more) * 6, 224);
-    canvas.print(more);
-  }
-}
-
-void splitTitle(const char* title, char* first, char* second) {
-  constexpr size_t maxCharacters = 22;
-  const size_t length = std::strlen(title);
-  if (length <= maxCharacters) {
-    std::snprintf(first, maxCharacters + 1, "%s", title);
-    second[0] = '\0';
-    return;
-  }
-  size_t split = maxCharacters;
-  while (split > 12 && title[split] != ' ') {
-    --split;
-  }
-  if (split <= 12) {
-    split = maxCharacters;
-  }
-  std::snprintf(first, maxCharacters + 1, "%.*s",
-                static_cast<int>(split), title);
-  const char* remainder = title + split;
-  while (*remainder == ' ') {
-    ++remainder;
-  }
-  copyEllipsized(second, maxCharacters + 1, remainder, maxCharacters);
 }
 
 void drawThreadDetail() {
   canvas.fillScreen(logoBackground);
+  drawThreadHeader("THREAD", "PRESS BACK", selectedThreadIndex + 1,
+                   detailThreadTotal, detailThreadTotal);
 
-  char heading[24];
-  std::snprintf(heading, sizeof(heading), "THREAD %u OF %u",
-                selectedThreadIndex + 1, detailThreadTotal);
-  drawCenteredText(heading, 8, 2, eyeColor);
-  canvas.drawFastHLine(12, 30, 296, logoHighlightColor);
-
-  char firstLine[25];
-  char secondLine[25];
-  splitTitle(detailThread.title, firstLine, secondLine);
-  drawCenteredText(firstLine, 43, 2, eyeColor);
-  if (secondLine[0]) {
-    drawCenteredText(secondLine, 67, 2, eyeColor);
-  }
-
-  char project[32];
-  copyEllipsized(project, sizeof(project),
-                  detailThread.project[0] ? detailThread.project : "no project",
-                  28);
-  drawCenteredText(project, 103, 1, textureColor);
+  char context[AMP_THREAD_PROJECT_LENGTH + 12];
+  copyThreadContext(detailThread, context, sizeof(context), 26);
+  drawCenteredText(context, 38, 2, textureColor);
+  drawThreadTitle(detailThread.title, 12, 35, 296, true);
 
   char stateLabel[32];
   threadStatusLabel(detailThread, stateLabel, sizeof(stateLabel));
-  const uint16_t stateColor = stateNeedsAttention(detailThread.state)
-                                  ? accentColor
-                                  : (detailThread.shipping
-                                         ? logoHighlightColor
-                                         : std::strcmp(detailThread.state,
-                                                       "idle") == 0
-                                         ? eyeColor
-                                         : logoHighlightColor);
-  drawCenteredText(stateLabel, 128, 2, stateColor);
-  drawCenteredText(detailUnreadAvailable
-                       ? (detailThread.unread ? "NEW MESSAGE" : "NO NEW MESSAGES")
-                       : "MESSAGES UNKNOWN",
-                   159, 1,
-                   detailUnreadAvailable && detailThread.unread ? unreadColor
-                                                                : textureColor);
-  drawCenteredText(detailThread.executorConnected ? "EXECUTOR CONNECTED"
-                                                   : "NO EXECUTOR ATTACHED",
-                   178, 1, textureColor);
+  const uint16_t statusColor = threadStatusColor(detailThread);
+  canvas.fillRoundRect(8, 136, 304, 44, 6, threadCardColor);
+  canvas.drawRoundRect(8, 136, 304, 44, 6, statusColor);
+  canvas.fillRoundRect(8, 136, 7, 44, 3, statusColor);
+  drawThreadStatusMark(detailThread, 29, 158, 7, threadCardColor);
+  drawSelectedText(stateLabel, 47, 149, 2, statusColor);
 
-  canvas.drawFastHLine(12, 204, 296, logoHighlightColor);
-  drawCenteredText("TURN: THREAD   PRESS: BACK", 218, 1, eyeColor);
+  const char* messageLabel = !detailUnreadAvailable
+                                 ? "MESSAGES UNKNOWN"
+                                 : (detailThread.unread ? "NEW MESSAGE"
+                                                        : "NO NEW MESSAGES");
+  const uint16_t messageColor = detailUnreadAvailable && detailThread.unread
+                                    ? unreadColor
+                                    : textureColor;
+  canvas.fillRoundRect(8, 190, 304, 42, 6, threadCardColor);
+  canvas.drawRoundRect(8, 190, 304, 42, 6, messageColor);
+  if (detailUnreadAvailable && detailThread.unread) {
+    canvas.fillRect(22, 205, 12, 12, messageColor);
+  } else {
+    canvas.drawRect(22, 205, 12, 12, messageColor);
+  }
+  drawSelectedText(messageLabel, 47, 202, 2, messageColor);
 }
 
 enum class ReelPhase : uint8_t {
@@ -2050,7 +2232,8 @@ void drawReelEventTitle(const ReelScene& scene, int16_t y, uint16_t color) {
   }
   char firstLine[25];
   char secondLine[25];
-  splitTitle(scene.eventTitle, firstLine, secondLine);
+  splitTitle(scene.eventTitle, firstLine, sizeof(firstLine), secondLine,
+             sizeof(secondLine), 22);
   drawCenteredText(firstLine, y, 2, color);
   if (secondLine[0]) {
     drawCenteredText(secondLine, y + 22, 2, color);
@@ -2457,6 +2640,9 @@ void initializeColors() {
   accentColor = display.color565(184, 92, 45);
   unreadColor = display.color565(66, 154, 224);
   textureColor = display.color565(105, 128, 77);
+  threadCardColor = display.color565(18, 29, 30);
+  workingColor = display.color565(104, 180, 111);
+  shippingColor = display.color565(225, 172, 79);
 }
 
 }  // namespace
@@ -2470,7 +2656,9 @@ void setup() {
   const uint8_t savedReelVersion = preferences.getUChar("designVer", 0);
   const uint8_t savedReelMode =
       preferences.getUChar("design", DEFAULT_REEL_MODE);
-  blinkingDisabled = preferences.getBool("noBlink", false);
+  blinkingEnabled = preferences.isKey("blink")
+                        ? preferences.getBool("blink", false)
+                        : !preferences.getBool("noBlink", true);
   reelMode = savedReelVersion == REEL_VERSION &&
                      savedReelMode < REEL_MODE_COUNT
                  ? savedReelMode
@@ -2478,7 +2666,7 @@ void setup() {
   preferences.end();
   Serial.printf("Saved design: %u/%u %s\n", reelMode + 1, REEL_MODE_COUNT,
                 REEL_MODE_NAMES[reelMode]);
-  Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
+  Serial.printf("Blinking: %s\n", blinkingEnabled ? "enabled" : "disabled");
 
   // D13 is both the default SPI clock and the Nano's yellow LED. Keep it low
   // and move the hardware SPI clock to unused D12 so display writes do not

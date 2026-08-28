@@ -2,7 +2,6 @@
 
 #include <Arduino.h>
 
-// Rasterized from Amp's official wordmark: https://ampcode.com/logo-dark.svg
 constexpr int16_t AMP_LOGO_WIDTH = 230;
 constexpr int16_t AMP_LOGO_HEIGHT = 118;
 

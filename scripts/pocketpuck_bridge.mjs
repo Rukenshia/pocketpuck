@@ -136,6 +136,22 @@ async function runAmpJson(ampCommand, args) {
   }
 }
 
+export async function readAmpProjectNames(ampCommand) {
+  const projects = await runAmpJson(ampCommand, ["projects", "list", "--json"]);
+  if (!Array.isArray(projects)) return new Map();
+  return new Map(
+    projects
+      .filter(
+        (project) =>
+          project &&
+          typeof project.id === "string" &&
+          typeof project.name === "string" &&
+          project.name.length > 0,
+      )
+      .map((project) => [project.id, project.name]),
+  );
+}
+
 export async function readThreadShipStatus(ampCommand, threadId) {
   const thread = await runAmpJson(ampCommand, ["threads", "export", threadId]);
   if (thread === null) return null;
@@ -371,23 +387,36 @@ export class BridgeCache {
     );
   }
 
-  updatePrivate(rawThreads, reconnecting = false) {
+  updatePrivate(rawThreads, reconnecting = false, projectNames = new Map()) {
     if (!Array.isArray(rawThreads)) return;
     const threads = rawThreads
       .filter(
         (thread) =>
           thread && typeof thread === "object" && thread.archived !== true,
       )
-      .map((thread) => ({
-        ...thread,
-        state: detailedState(thread),
-        shipping: isShipping(thread),
-        project: projectFromWorkspace(thread.workspace),
-        workspaceDisplayName:
-          typeof thread.workspace?.displayName === "string"
-            ? thread.workspace.displayName
-            : "",
-      }));
+      .map((thread) => {
+        const projectId =
+          typeof thread.projectId === "string"
+            ? thread.projectId
+            : typeof thread.projectID === "string"
+              ? thread.projectID
+              : typeof thread.meta?.projectID === "string"
+                ? thread.meta.projectID
+                : null;
+        const projectName = projectId ? projectNames.get(projectId) : null;
+        return {
+          ...thread,
+          state: detailedState(thread),
+          shipping: isShipping(thread),
+          project:
+            projectName || (projectId ? projectFromWorkspace(thread.workspace) : ""),
+          projectResolved: Boolean(projectName),
+          workspaceDisplayName:
+            typeof thread.workspace?.displayName === "string"
+              ? thread.workspace.displayName
+              : "",
+        };
+      });
     this.recordEvents("user-actor", threads);
     threads
       .sort((left, right) =>
@@ -427,6 +456,7 @@ export class BridgeCache {
           ? thread.title
           : "Untitled thread",
       project: thread.project,
+      projectResolved: thread.projectResolved,
       workspaceDisplayName: thread.workspaceDisplayName,
       state: thread.state,
       executorConnected: thread.executorConnected === true,
@@ -526,6 +556,7 @@ export async function connectPrivateOnce(
     resyncIntervalMs = PRIVATE_RESYNC_INTERVAL_MS,
     shippingPollIntervalMs = 10_000,
     readShipStatus = async () => "none",
+    projectNames = new Map(),
   } = {},
 ) {
   let credentials = initialCredentials;
@@ -598,7 +629,7 @@ export async function connectPrivateOnce(
         shipped: recentlyShipped.has(summary.threadId),
       };
     });
-    cache.updatePrivate(summaries, false);
+    cache.updatePrivate(summaries, false, projectNames);
   };
   const refreshShipping = () => {
     if (shippingPollPromise) return shippingPollPromise;
@@ -751,10 +782,12 @@ async function runPrivate(cache, configuration) {
   let delayMs = 1_000;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
+      const projectNames = await readAmpProjectNames(configuration.ampCommand);
       const credentials = await bootstrapCredentials(configuration);
       await connectPrivateOnce(cache, configuration, credentials, {
         readShipStatus: (threadId) =>
           readThreadShipStatus(configuration.ampCommand, threadId),
+        projectNames,
       });
     } catch (error) {
       console.error(

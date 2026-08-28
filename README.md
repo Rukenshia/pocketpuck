@@ -30,7 +30,7 @@ Disconnect USB power while wiring. The table below refers to the Arduino Nano ES
 | `CLK`          | `D2`       | Rotation clock         |
 | `DT`           | `D3`       | Rotation direction     |
 | `SW`           | `D4`       | Push switch            |
-| `+`            | `D5`       | Module pull-up voltage |
+| `+`            | `D5`       | Module pull-up voltage (you should connect this to 3V3 but I was lazy) |
 | `GND`          | `GND`      | Common ground          |
 
 PocketPuck holds `D5` high at 3.3 V to supply the resistor-only encoder module's
@@ -46,7 +46,7 @@ open the thread list. Hold the button for 700 ms to open the main menu. Select
 synchronized scripted status lifecycle; pressing confirms a choice that
 persists across reboots. Prominent display copy uses IBM Plex Mono, while
 compact labels retain the pixel font so dense screens remain readable. The
-**Settings** submenu can disable Puck's blinking, open **Debug Face**, or reset
+**Settings** submenu can enable Puck's blinking, open **Debug Face**, or reset
 all settings to their defaults. Debug Face holds the
 currently selected face on a dial-selected fixture state—Idle, Working, Message,
 Attention, or All Clear. Each dial change plays that state's normal transition,
@@ -57,11 +57,12 @@ messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.
 Every completed ship uses the full-screen Liftoff rocket animation regardless
 of the selected face.
-In the thread list, turn to select a thread and press to see its full title,
-project, state, unread status, and executor attachment. Turn on the detail page
-to move between threads, short-press to return to the list, or hold the button
-for 700 ms to return directly to the face. Manual browsing returns to the face
-after 30 seconds without input.
+The thread list shows four rows at a time. Turn to navigate up to eight recent
+threads; the selected row expands to show its wrapped title, resolved Amp
+project name, state, and unread marker. Press for a dedicated detail view, turn
+there to move between threads, short-press to return to the list, or hold the
+button for 700 ms to return directly to the face. Thread browsing stays open
+until you leave it.
 
 The display is write-only, so PocketPuck remaps the hardware SPI clock to the
 otherwise-unused `D12` pin. The Nano ESP32's yellow built-in LED shares `D13`
@@ -164,6 +165,7 @@ With the private integration configured, the response has this shape (the
       "id": "T-123",
       "title": "Build PocketPuck UI",
       "project": "pocketpuck",
+      "projectResolved": true,
       "state": "tool_use",
       "executorConnected": true,
       "unread": false,
@@ -186,7 +188,7 @@ is treated as idle so its last execution state cannot briefly reappear as
 working. It exposes Amp's detailed
 `idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
-separately as `unread` and shown as a blue dot in the thread overview.
+separately as `unread` and shown as a blue marker in the thread overview.
 Amp's Ship UI lifecycle is exposed independently as `shipping`. The user-actor
 summary identifies candidates but does not carry this field, so the bridge
 checks recent and active candidates with `amp threads export`; both the
@@ -208,8 +210,13 @@ working so the separate shipping count does not overlap it. Unread remains an
 independent count that may overlap any of them. Executor attachment remains
 orthogonal and is never interpreted as thread health.
 
-For raw summaries, `project` is derived from the basename of `workspace.uri`,
-matching Amp's display fallback. The optional `workspace.displayName` is kept
+The user-actor summary carries a project ID but not its human-readable name.
+The bridge resolves IDs once per private connection with
+`amp projects list --json`, emits the name as `project`, and marks it with
+`projectResolved: true`. If that lookup is unavailable, the repository basename
+from `workspace.uri` remains a clearly marked fallback instead of being
+presented as an Amp project name. Threads without an Amp project remain
+distinguishable from both. The optional `workspace.displayName` is kept
 separately as `workspaceDisplayName` rather than silently substituting it.
 
 If automatic discovery fails, private authentication fails, its response shape
@@ -243,9 +250,14 @@ then starts Wi-Fi and keeps the connecting face visible for at least two seconds
 and until Wi-Fi connects or the bounded 20-second attempt expires. It then shows
 the face even when degraded, with clear states for setup, Wi-Fi,
 bridge reconnects, and no threads. Pressing the rotary encoder opens an overview
-with up to four thread titles, projects, states, and blue unread markers; long
-fields are deterministically ellipsized and an overflow count represents
-additional rows.
+with up to eight dial-navigable threads and four visible rows. The selected row
+expands in place, but every card title uses the same readable type size and wraps
+to a measured second line when needed. Resolved project names appear without a
+prefix; unresolved repository fallbacks leave that line empty. Every row keeps
+its plain-language state, shape-coded status mark, and blue unread marker.
+**Press for info** lives in the header. The list and detail view remain open
+until the button changes pages; only menus retain an inactivity timeout. The
+header reports additional summaries that are not shown.
 
 The bridge binds to `0.0.0.0` by default so the microcontroller can reach it on
 the LAN. Do not expose port 8765 to the public Internet. Use `--host` to bind a

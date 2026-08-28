@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-constexpr uint8_t AMP_THREAD_SUMMARY_LIMIT = 4;
+constexpr uint8_t AMP_THREAD_SUMMARY_LIMIT = 8;
 constexpr uint8_t AMP_THREAD_EVENT_LIMIT = 8;
 constexpr size_t AMP_THREAD_ID_LENGTH = 40;
 constexpr size_t AMP_THREAD_TITLE_LENGTH = 49;
@@ -16,10 +16,10 @@ struct AmpThreadSummary {
   char title[AMP_THREAD_TITLE_LENGTH] = "";
   char project[AMP_THREAD_PROJECT_LENGTH] = "";
   char state[AMP_THREAD_STATE_LENGTH] = "idle";
-  bool executorConnected = false;
   bool unread = false;
   bool shipping = false;
   bool shipped = false;
+  bool projectResolved = false;
 };
 
 struct AmpThreadEvent {

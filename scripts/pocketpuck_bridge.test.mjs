@@ -72,6 +72,7 @@ describe("BridgeCache", () => {
       threadId: String(index),
       title: state,
       state,
+      projectId: "project-1",
       hasUnreadMessages: unread,
       executorConnected: index % 2 === 0,
       updatedAt: `2026-08-26T21:02:0${index}Z`,
@@ -80,7 +81,11 @@ describe("BridgeCache", () => {
         displayName: "Friendly Puck",
       },
     }));
-    cache.updatePrivate(summaries);
+    cache.updatePrivate(
+      summaries,
+      false,
+      new Map([["project-1", "PocketPuck"]]),
+    );
     const value = cache.read();
     expect(value.source).toBe("user-actor");
     expect(value.running).toBe(3);
@@ -96,8 +101,27 @@ describe("BridgeCache", () => {
     expect(value.attention).toEqual({ awaitingApproval: 1, error: 1 });
     expect(value.shipping).toBe(0);
     expect(value.items[0].state).toBe("awaiting_approval");
-    expect(value.items[0].project).toBe("pocketpuck");
+    expect(value.items[0].project).toBe("PocketPuck");
+    expect(value.items[0].projectResolved).toBeTrue();
     expect(value.items[0].workspaceDisplayName).toBe("Friendly Puck");
+  });
+
+  test("marks repository basenames as project-name fallbacks", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "thread-1",
+        title: "Fallback project",
+        state: "idle",
+        projectId: "missing-project",
+        workspace: { uri: "file:///example/checkouts/pocketpuck" },
+      },
+    ]);
+
+    expect(cache.read().items[0]).toMatchObject({
+      project: "pocketpuck",
+      projectResolved: false,
+    });
   });
 
   test("publishes simultaneous events without losing lower-priority changes", () => {

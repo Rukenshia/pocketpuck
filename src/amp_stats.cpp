@@ -137,10 +137,10 @@ void fetchStats() {
     copyJsonString(summary.title, thread["title"], "Untitled thread");
     copyJsonString(summary.project, thread["project"]);
     copyJsonString(summary.state, thread["state"], "idle");
-    summary.executorConnected = thread["executorConnected"] | false;
     summary.unread = thread["unread"] | false;
     summary.shipping = thread["shipping"] | false;
     summary.shipped = thread["shipped"] | false;
+    summary.projectResolved = thread["projectResolved"] | false;
   }
 
   workerStats.eventCount = 0;
