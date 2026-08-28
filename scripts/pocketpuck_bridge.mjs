@@ -278,7 +278,10 @@ export class BridgeCache {
   updatePrivate(rawThreads, reconnecting = false) {
     if (!Array.isArray(rawThreads)) return;
     const threads = rawThreads
-      .filter((thread) => thread && typeof thread === "object")
+      .filter(
+        (thread) =>
+          thread && typeof thread === "object" && thread.archived !== true,
+      )
       .map((thread) => ({
         ...thread,
         state: detailedState(thread),
@@ -482,13 +485,20 @@ export async function connectPrivateOnce(
       const summary = shipThreadSummaries.get(threadId);
       if (summary && !publishedIds.has(threadId)) publishThreads.push(summary);
     }
-    const summaries = publishThreads.map((summary) => ({
-      ...summary,
-      shippingState: shippingThreadIds.has(summary.threadId)
-        ? { status: "shipping" }
-        : undefined,
-      shipped: recentlyShipped.has(summary.threadId),
-    }));
+    const summaries = publishThreads.map((summary) => {
+      const shipSettled =
+        pendingShipCompletions.has(summary.threadId) ||
+        recentlyShipped.has(summary.threadId);
+      return {
+        ...summary,
+        state: shipSettled ? "idle" : summary.state,
+        indicator: shipSettled ? undefined : summary.indicator,
+        shippingState: shippingThreadIds.has(summary.threadId)
+          ? { status: "shipping" }
+          : undefined,
+        shipped: recentlyShipped.has(summary.threadId),
+      };
+    });
     cache.updatePrivate(summaries, false);
   };
   const refreshShipping = () => {

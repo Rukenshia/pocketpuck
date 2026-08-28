@@ -180,7 +180,10 @@ With the private integration configured, the response has this shape (the
 The bridge keeps one GLOBAL user-actor connection, loads a recent baseline,
 applies `threadStatusUpdated` events, and refreshes the authoritative baseline
 every 20 seconds so a silent event subscription cannot preserve old data
-indefinitely. It exposes Amp's detailed
+indefinitely. Archived threads are excluded. During Ship completion
+confirmation and the bounded shipped-notification window, a retained summary
+is treated as idle so its last execution state cannot briefly reappear as
+working. It exposes Amp's detailed
 `idle`, `compacting`, `working`, `streaming`, `tool_use`, `running_tools`,
 `awaiting_approval`, and `error` states. `hasUnreadMessages` is counted
 separately as `unread` and shown as a blue dot in the thread overview.

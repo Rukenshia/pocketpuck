@@ -152,6 +152,28 @@ describe("BridgeCache", () => {
     expect(value.items[0].shipped).toBeTrue();
   });
 
+  test("excludes archived summaries from private statistics", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      {
+        threadId: "archived",
+        title: "Already shipped",
+        state: "working",
+        archived: true,
+      },
+      {
+        threadId: "current",
+        title: "Current work",
+        state: "idle",
+      },
+    ]);
+
+    const value = cache.read();
+    expect(value.total).toBe(1);
+    expect(value.working).toBe(0);
+    expect(value.items.map((item) => item.id)).toEqual(["current"]);
+  });
+
   test("maps the live confirmation indicator to awaiting approval", () => {
     const cache = new BridgeCache();
     cache.updatePrivate([
@@ -376,6 +398,8 @@ describe("private actor liveness", () => {
 
     expect(cache.read().shipping).toBe(0);
     expect(cache.read().shipped).toBe(1);
+    expect(cache.read().working).toBe(0);
+    expect(cache.read().items[0].state).toBe("idle");
     expect(cache.read().items[0].shipped).toBeTrue();
   });
 });
