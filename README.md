@@ -9,7 +9,7 @@
 
 Full video demo:
 
-<video controls src="https://github.com/user-attachments/assets/eebd0190-7875-4f72-867d-91fb097cefb3" />
+<video controls src="https://github.com/user-attachments/assets/eebd0190-7875-4f72-867d-91fb097cefb3"></video>
 
 ## Hardware
 
