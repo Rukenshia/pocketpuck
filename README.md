@@ -1,48 +1,37 @@
 # PocketPuck
 
-A tiny display companion for [Amp](https://ampcode.com), built with an Arduino
-Nano ESP32 and a Waveshare 2inch LCD Module. Amp's wordmark rolls through its
-dark splash animation while networking starts, then gives way to a living face
-with prominent live thread counts.
-
-The demo treats Puck as an ancient, slightly bewildered computational familiar:
-capable, deadpan, and quietly surprised by success. It loops through a slow
-wake-up, a long frowning idle, mild bewilderment, thinking, a restrained
-reaction, and one dry observation. Everything except the compressed Amp
-wordmark is drawn procedurally, so expressions can be changed without generating
-new image assets.
+A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state
+and lets you know if you need to take action. It's also very cute.
 
 ## Hardware
 
-- Arduino Nano ESP32
+- Arduino Nano ESP32 (any ESP32 will work, but you might have to change pinout assignments)
 - [Waveshare 2inch LCD Module](https://www.waveshare.com/wiki/2inch_LCD_Module)
-  (240 x 320, ST7789V, 4-wire SPI)
-- Five-pin rotary encoder module (`CLK`, `DT`, `SW`, `+`, `GND`)
-- 13 jumper wires
+  (240 x 320, ST7789V)
+- Rotary encoder with push button (KY-040 or similar)
 
 ### Wiring
 
-Disconnect USB power while wiring. Use the **Nano pin labels** in this table,
-not the ESP32-S3's raw GPIO numbers.
+Disconnect USB power while wiring. The table below refers to the Arduino Nano ESP32 pin labels, not the normal ESP32 GPIO pinout.
 
-| Waveshare LCD | Nano ESP32 | Purpose |
-| --- | --- | --- |
-| `VCC` | `3V3` | Power |
-| `GND` | `GND` | Ground |
-| `DIN` | `D11` / `COPI` | SPI data to display |
-| `CLK` | `D12` / `CIPO` | Remapped SPI clock |
-| `CS` | `D10` | Chip select |
-| `DC` | `D7` | Data/command select |
-| `RST` | `D8` | Display reset |
-| `BL` | `D9` | Backlight, active high |
+| Waveshare LCD | Nano ESP32     | Purpose                |
+| ------------- | -------------- | ---------------------- |
+| `VCC`         | `3V3`          | Power                  |
+| `GND`         | `GND`          | Ground                 |
+| `DIN`         | `D11` / `COPI` | SPI data to display    |
+| `CLK`         | `D12` / `CIPO` | Remapped SPI clock     |
+| `CS`          | `D10`          | Chip select            |
+| `DC`          | `D7`           | Data/command select    |
+| `RST`         | `D8`           | Display reset          |
+| `BL`          | `D9`           | Backlight, active high |
 
-| Rotary encoder | Nano ESP32 | Purpose |
-| --- | --- | --- |
-| `CLK` | `D2` | Rotation clock |
-| `DT` | `D3` | Rotation direction |
-| `SW` | `D4` | Push switch |
-| `+` | `D5` | Module pull-up voltage |
-| `GND` | `GND` | Common ground |
+| Rotary encoder | Nano ESP32 | Purpose                |
+| -------------- | ---------- | ---------------------- |
+| `CLK`          | `D2`       | Rotation clock         |
+| `DT`           | `D3`       | Rotation direction     |
+| `SW`           | `D4`       | Push switch            |
+| `+`            | `D5`       | Module pull-up voltage |
+| `GND`          | `GND`      | Common ground          |
 
 PocketPuck holds `D5` high at 3.3 V to supply the resistor-only encoder module's
 small pull-up current, leaving the Nano's `3V3` pin available for the display.
@@ -59,8 +48,8 @@ persists across reboots. **Select Font** similarly previews and persists
 Classic, IBM Plex Mono, Chakra Petch, and VT323 treatments for the prominent
 display copy, plus Share Tech Mono, Audiowide, Rajdhani, and Quantico. Compact
 labels retain the pixel font so dense screens remain readable. The **Settings**
-submenu can disable Puck's blinking, open **Debug Face**, or reset all settings,
-including the selected face and font, to their defaults. Debug Face holds the
+submenu can disable Puck's blinking, open **Debug Face**, or reset all settings
+to their defaults. Debug Face holds the
 currently selected face on a dial-selected fixture state—Idle, Working, Message,
 Attention, or All Clear. Each dial change plays that state's normal transition,
 then holds it instead of advancing on the normal timer; press the dial to return
@@ -68,6 +57,8 @@ to Settings. Outside the picker, the selected design uses live
 Amp data. Working remains ambient, new
 messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.
+Every completed ship uses the full-screen Liftoff rocket animation regardless
+of the selected face.
 In the thread list, turn to select a thread and press to see its full title,
 project, state, unread status, and executor attachment. Turn on the detail page
 to move between threads, short-press to return to the list, or hold the button
@@ -149,7 +140,43 @@ With the private integration configured, the response has this shape (the
 `items` list is bounded to eight summaries):
 
 ```json
-{"schemaVersion":2,"source":"user-actor","running":4,"idle":10,"states":{"idle":10,"compacting":0,"working":0,"streaming":1,"tool_use":0,"running_tools":2,"awaiting_approval":1,"error":0,"unknown":0},"unread":2,"shipping":1,"shipped":0,"executorConnected":6,"headline":{"working":3,"needsAttention":1,"idle":10},"items":[{"id":"T-123","title":"Build PocketPuck UI","project":"pocketpuck","state":"tool_use","executorConnected":true,"unread":false,"shipping":true,"shipped":false}],"updatedAt":"2026-08-26T21:02:57.697Z","reconnecting":false,"stale":false}
+{
+  "schemaVersion": 2,
+  "source": "user-actor",
+  "running": 4,
+  "idle": 10,
+  "states": {
+    "idle": 10,
+    "compacting": 0,
+    "working": 0,
+    "streaming": 1,
+    "tool_use": 0,
+    "running_tools": 2,
+    "awaiting_approval": 1,
+    "error": 0,
+    "unknown": 0
+  },
+  "unread": 2,
+  "shipping": 1,
+  "shipped": 0,
+  "executorConnected": 6,
+  "headline": { "working": 3, "needsAttention": 1, "idle": 10 },
+  "items": [
+    {
+      "id": "T-123",
+      "title": "Build PocketPuck UI",
+      "project": "pocketpuck",
+      "state": "tool_use",
+      "executorConnected": true,
+      "unread": false,
+      "shipping": true,
+      "shipped": false
+    }
+  ],
+  "updatedAt": "2026-08-26T21:02:57.697Z",
+  "reconnecting": false,
+  "stale": false
+}
 ```
 
 The bridge keeps one GLOBAL user-actor connection, loads a recent baseline,
@@ -210,9 +237,10 @@ cp include/network_config.example.h include/network_config.h
 
 Edit `include/network_config.h`, then build and upload normally. This local
 file is ignored by git. The display retries Wi-Fi every 15 seconds and polls
-the bridge every 10 seconds. Startup keeps the animated logo visible until the
-first bridge result, or a bounded 20-second attempt, plus another five seconds.
-It then shows the face even when degraded, with clear states for setup, Wi-Fi,
+the bridge every 10 seconds. Startup shows the animated logo for five seconds,
+then starts Wi-Fi and keeps the connecting face visible for at least two seconds
+and until Wi-Fi connects or the bounded 20-second attempt expires. It then shows
+the face even when degraded, with clear states for setup, Wi-Fi,
 bridge reconnects, and no threads. Pressing the rotary encoder opens an overview
 with up to four thread titles, projects, states, and blue unread markers; long
 fields are deterministically ellipsized and an overflow count represents

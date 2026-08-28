@@ -39,24 +39,13 @@ constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
 constexpr uint32_t NOTIFICATION_DURATION_MS = 4200;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
-constexpr uint32_t LOGO_HOLD_AFTER_SETUP_MS = 5000;
-constexpr uint32_t WAKE_DURATION_MS = 2500;
-constexpr uint32_t IDLE_DURATION_MS = 9000;
-constexpr uint32_t BEWILDERED_DURATION_MS = 5000;
-constexpr uint32_t THINKING_DURATION_MS = 6000;
-constexpr uint32_t QUIET_SURPRISE_DURATION_MS = 2500;
-constexpr uint32_t WORKED_DURATION_MS = 4000;
-constexpr uint32_t DEMO_DURATION_MS =
-    WAKE_DURATION_MS + IDLE_DURATION_MS + BEWILDERED_DURATION_MS +
-    THINKING_DURATION_MS + QUIET_SURPRISE_DURATION_MS + WORKED_DURATION_MS;
+constexpr uint32_t STARTUP_LOGO_DURATION_MS = 5000;
+constexpr uint32_t CONNECTING_FACE_MIN_DURATION_MS = 2000;
 
-// =================== DESIGN REEL (temporary experiment) ====================
-// Confirmed designs render live Amp state. Holding the dial button opens a
+// Confirmed faces render live Amp state. Holding the dial button opens a
 // picker that automatically runs the synchronized fixture lifecycle while the
 // dial previews each design. The optional scripted toggle runs that lifecycle
-// outside the picker too. To revert completely, set DESIGN_REEL_ENABLED to
-// false or delete the blocks between the "DESIGN REEL" markers.
-constexpr bool DESIGN_REEL_ENABLED = true;
+// outside the picker too.
 constexpr bool DESIGN_REEL_SCRIPTED = false;
 constexpr uint8_t REEL_VERSION = 5;
 constexpr uint8_t REEL_MODE_COUNT = 4;
@@ -73,7 +62,6 @@ const char* const FONT_NAMES[FONT_COUNT] = {
 const char* const DEBUG_FACE_PHASE_NAMES[DEBUG_FACE_PHASE_COUNT] = {
     "IDLE", "WORKING", "MESSAGE", "ATTENTION", "ALL CLEAR",
 };
-// ================== END DESIGN REEL constants =============================
 
 constexpr int16_t LOGO_FRAME_WIDTH = AMP_LOGO_WIDTH;
 constexpr int16_t LOGO_FRAME_HEIGHT = AMP_LOGO_HEIGHT + 24;
@@ -105,6 +93,8 @@ uint16_t textureColor;
 uint32_t demoStartedAt = 0;
 uint32_t lastFrameAt = 0;
 uint32_t initialSetupCompletedAt = 0;
+uint32_t wifiConnectionStartedAt = 0;
+bool ampStatsStarted = false;
 uint8_t backlightBrightness = 255;
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 DRAM_ATTR const int8_t encoderTransitions[16] = {
@@ -157,7 +147,6 @@ AmpStatsSnapshot previousStats;
 bool statsBaselineReady = false;
 uint32_t reelAllClearStartedAt = 0;
 
-// DESIGN REEL state (delete with the reel).
 uint8_t reelMode = 0;
 uint8_t reelModeBeforeSelection = 0;
 uint32_t reelModeChangedAt = 0;
@@ -426,8 +415,7 @@ void updateControls(uint32_t now) {
       navigateThreads(encoderSteps, now, false);
     } else if (uiPage == UiPage::ThreadDetail) {
       navigateThreads(encoderSteps, now, true);
-    } else if (DESIGN_REEL_ENABLED && reelModeSelecting) {
-      // DESIGN REEL: only cycle concepts inside the deliberate mode picker.
+    } else if (reelModeSelecting) {
       const int16_t next =
           (static_cast<int16_t>(reelMode) + encoderSteps) % REEL_MODE_COUNT;
       reelMode = static_cast<uint8_t>((next + REEL_MODE_COUNT) %
@@ -481,7 +469,7 @@ void updateControls(uint32_t now) {
     buttonLongHandled = true;
     if (uiPage != UiPage::Face) {
       showFace();
-    } else if (DESIGN_REEL_ENABLED) {
+    } else {
       showMainMenu(now);
     }
   }
@@ -736,72 +724,6 @@ FacePose neutralPose() {
   return FacePose{};
 }
 
-void drawWake(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  const float awake = smoothStep(elapsed / 1200.0F);
-  pose.leftEyeOpen = awake;
-  pose.rightEyeOpen = awake;
-  pose.gazeY = mix(-0.3F, 0.0F, awake);
-  pose.mouthCurveY = mix(157.0F, 149.0F, awake);
-  drawFace(pose);
-}
-
-void drawIdle(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  pose.gazeX = std::sin(elapsed * 0.00078F) * 0.55F;
-  pose.gazeY = std::cos(elapsed * 0.0011F) * 0.12F;
-  pose.leftEyeOpen = blinkAt(elapsed, 2600, 280) * blinkAt(elapsed, 7900, 300);
-  pose.rightEyeOpen = pose.leftEyeOpen;
-  pose.mouthCurveY = 149.0F + std::sin(elapsed * 0.0008F);
-  drawFace(pose);
-}
-
-void drawBewildered(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  const float settle = smoothStep(elapsed / 900.0F);
-  pose.gazeX = mix(0.0F, -0.58F, settle) +
-               std::sin(elapsed * 0.0007F) * 0.08F;
-  pose.gazeY = 0.12F * settle;
-  pose.leftEyeOpen = mix(1.0F, 0.84F, settle);
-  pose.rightEyeOpen = mix(1.0F, 0.72F, settle);
-  pose.mouthCurveY = mix(149.0F, 147.0F, settle);
-  pose.mouthTilt = -2.0F * settle;
-  drawFace(pose);
-}
-
-void drawThinking(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  const float settle = smoothStep(elapsed / 1000.0F);
-  pose.gazeX = mix(0.0F, 0.62F, settle) +
-               std::sin(elapsed * 0.0008F) * 0.12F;
-  pose.gazeY = mix(0.0F, -0.42F, settle) +
-               std::cos(elapsed * 0.0007F) * 0.06F;
-  pose.leftEyeOpen = blinkAt(elapsed, 4200, 300);
-  pose.rightEyeOpen = pose.leftEyeOpen;
-  pose.mouthCurveY = 148.0F + std::sin(elapsed * 0.001F);
-  drawFace(pose);
-}
-
-void drawQuietSurprise(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  const float surprise = smoothStep(elapsed / 700.0F);
-  pose.eyeScale = mix(1.0F, 1.08F, surprise);
-  pose.pupilScale = mix(1.0F, 0.92F, surprise);
-  pose.rightEyeOpen = mix(1.0F, 0.96F, surprise);
-  pose.mouthCurveY = mix(148.0F, 154.0F, surprise);
-  drawFace(pose);
-}
-
-void drawWorked(uint32_t elapsed) {
-  FacePose pose = neutralPose();
-  const float settle = smoothStep(elapsed / 900.0F);
-  pose.eyeScale = mix(1.08F, 1.0F, settle);
-  pose.pupilScale = mix(0.92F, 1.0F, settle);
-  pose.gazeX = 0.08F;
-  pose.mouthCurveY = mix(154.0F, 149.0F, settle);
-  drawFace(pose);
-}
-
 void setSelectedFont(uint8_t size) {
   if (selectedFont == 0 || size == 1) {
     canvas.setFont();
@@ -820,17 +742,22 @@ void setSelectedFont(uint8_t size) {
   canvas.setTextSize(std::max<uint8_t>(1, (size + 1) / 2));
 }
 
-uint16_t selectedTextWidth(const char* text, uint8_t size) {
+void selectedTextDimensions(const char* text, uint8_t size, uint16_t& width,
+                            uint16_t& height) {
   setSelectedFont(size);
   canvas.setTextWrap(false);
   int16_t x1;
   int16_t y1;
-  uint16_t width;
-  uint16_t height;
   canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
   canvas.setTextWrap(true);
   canvas.setFont();
   canvas.setTextSize(1);
+}
+
+uint16_t selectedTextWidth(const char* text, uint8_t size) {
+  uint16_t width;
+  uint16_t height;
+  selectedTextDimensions(text, size, width, height);
   return width;
 }
 
@@ -969,74 +896,6 @@ void drawStatsPanel(const AmpStatsSnapshot& stats) {
   drawSideMetric(291, 77, stats.unread, stats.unreadAvailable, "NEW",
                  "MESSAGES", unreadColor);
   drawSideMetric(291, 143, stats.idle, true, "IDLE", nullptr, eyeColor);
-}
-
-void drawAttentionPulse(uint32_t elapsed) {
-  const float beat = std::pow(std::max(0.0F, std::sin(elapsed * 0.0105F)), 7.0F);
-  const uint16_t amber = display.color565(241, 94, 38);
-  const uint16_t hot = display.color565(255, 194, 67);
-  const uint16_t ink = display.color565(39, 13, 8);
-  canvas.fillScreen(beat > 0.45F ? hot : amber);
-
-  const int16_t radius = 43 + std::lround(beat * 8.0F);
-  canvas.fillCircle(160, 70, radius, ink);
-  const int16_t markOffset = std::lround(beat * 3.0F);
-  canvas.fillRoundRect(154, 38 - markOffset, 13, 31, 6, hot);
-  canvas.fillCircle(160, 82 - markOffset, 7, hot);
-  drawCenteredText("NEEDS ATTENTION", 124, 3, ink);
-  canvas.fillRect(40, 170, 240, 2, ink);
-  drawCenteredText(elapsed < 2100 ? "APPROVAL REQUESTED" : "THREAD IS WAITING",
-                   185, 2, ink);
-
-  for (int16_t x = -20; x < SCREEN_WIDTH + 20; x += 32) {
-    canvas.fillTriangle(x, 212, x + 15, 212, x + 31, 220, ink);
-  }
-}
-
-FacePose notificationPose(uint32_t elapsed, float visibility) {
-  const float surprise = smoothStep(elapsed / 500.0F) * visibility;
-  FacePose pose = neutralPose();
-  pose.eyeScale = mix(1.0F, 1.12F, surprise);
-  pose.pupilScale = mix(1.0F, 0.78F, surprise);
-  pose.gazeY = -0.3F * surprise;
-  pose.mouthCurveY = mix(149.0F, 157.0F, surprise);
-  pose.yOffset = visibility * 12.0F;
-  return pose;
-}
-
-void drawStatusNotification(uint32_t elapsed, NotificationKind kind,
-                            const char* title, const AmpStatsSnapshot& stats) {
-  float visibility = smoothStep(elapsed / 600.0F);
-  if (elapsed > 3500) {
-    visibility *= 1.0F - smoothStep((elapsed - 3500) / 600.0F);
-  }
-  drawFace(notificationPose(elapsed, visibility));
-  drawStatsPanel(stats);
-
-  const uint16_t statusColor = kind == NotificationKind::Message
-                                   ? unreadColor
-                                   : display.color565(104, 180, 111);
-  const uint16_t paper = display.color565(239, 236, 203);
-  const int16_t stripHeight = std::lround(visibility * 48.0F);
-
-  canvas.fillRect(0, 0, SCREEN_WIDTH, stripHeight, faceShadowColor);
-  canvas.fillRect(0, stripHeight, SCREEN_WIDTH, 4, statusColor);
-  if (stripHeight > 35) {
-    char subtitle[45];
-    std::snprintf(subtitle, sizeof(subtitle), "%.43s",
-                  title && title[0] ? title : "Amp thread");
-    canvas.fillCircle(20, 23, 8, statusColor);
-    canvas.setTextColor(paper);
-    canvas.setTextSize(2);
-    canvas.setCursor(39, 9);
-    canvas.print(kind == NotificationKind::Message
-                     ? "NEW MESSAGE"
-                     : (kind == NotificationKind::Shipped ? "SHIPPED"
-                                                           : "THREAD WORKING"));
-    canvas.setTextSize(1);
-    canvas.setCursor(40, 31);
-    canvas.print(subtitle);
-  }
 }
 
 const AmpThreadSummary* findPreviousThread(const AmpThreadSummary& thread) {
@@ -1367,7 +1226,6 @@ void drawThreadDetail() {
 }
 
 
-// =================== DESIGN REEL drawing (temporary) ========================
 // Live state drives the selected design by default. The optional scripted
 // comparison plays the same 25 s lifecycle in every mode: idle -> thread
 // active -> new message -> needs attention -> all clear.
@@ -1625,7 +1483,7 @@ ReelScene liveReelScene(uint32_t now) {
 }
 
 struct ReelStatus {
-  char text[28];
+  char text[32];
   uint16_t color;
 };
 
@@ -1653,8 +1511,9 @@ ReelStatus reelStatus(const ReelScene& scene) {
       status.color = unreadColor;
       break;
     case ReelPhase::Attention:
-      std::snprintf(status.text, sizeof(status.text), "%u NEEDS ATTENTION",
-                    scene.stats.needsAttention);
+      std::snprintf(status.text, sizeof(status.text), "%u NEED%s ATTENTION",
+                    scene.stats.needsAttention,
+                    scene.stats.needsAttention == 1 ? "S" : "");
       status.color = accentColor;
       break;
     case ReelPhase::Resolved:
@@ -1721,25 +1580,25 @@ FacePose reelPose(const ReelScene& scene) {
   return pose;
 }
 
-float reelTakeoverVisibility(const ReelScene& scene) {
-  if (scene.phase != ReelPhase::Message &&
-      scene.phase != ReelPhase::Attention) {
-    return 0.0F;
-  }
-  float visibility = smoothStep(scene.phaseElapsed / 620.0F);
-  if (scene.phaseElapsed > 3500) {
-    visibility *=
-        1.0F - smoothStep((scene.phaseElapsed - 3500) / 750.0F);
-  }
-  return visibility;
-}
-
 uint16_t reelPhaseColor(const ReelScene& scene) {
   return reelStatus(scene).color;
 }
 
 const char* reelProject(const ReelScene& scene) {
   return scene.eventProject[0] ? scene.eventProject : "AMP";
+}
+
+const AmpThreadSummary* reelAttentionThread(const ReelScene& scene) {
+  if (scene.eventTitle[0]) {
+    for (uint8_t index = 0; index < scene.stats.threadCount; ++index) {
+      const AmpThreadSummary& thread = scene.stats.threads[index];
+      if (stateNeedsAttention(thread.state) &&
+          std::strcmp(thread.title, scene.eventTitle) == 0) {
+        return &thread;
+      }
+    }
+  }
+  return reelThreadForPhase(scene.stats, ReelPhase::Attention);
 }
 
 const char* reelDetail(const ReelScene& scene) {
@@ -1752,8 +1611,7 @@ const char* reelDetail(const ReelScene& scene) {
     case ReelPhase::Message:
       return "New message in thread";
     case ReelPhase::Attention: {
-      const AmpThreadSummary* thread =
-          reelThreadForPhase(scene.stats, ReelPhase::Attention);
+      const AmpThreadSummary* thread = reelAttentionThread(scene);
       if (thread && std::strcmp(thread->state, "awaiting_approval") == 0) {
         return "Waiting for approval";
       }
@@ -1771,468 +1629,17 @@ const char* reelDetail(const ReelScene& scene) {
   }
 }
 
-void drawWatchShelf(const ReelScene& scene) {
-  constexpr int16_t x = 8;
-  constexpr int16_t width = 304;
-  const ReelStatus status = reelStatus(scene);
-  const uint16_t color = status.color;
-  canvas.fillRoundRect(x, 194, width, 42, 7, faceShadowColor);
-  canvas.fillRoundRect(x, 194, 6, 42, 3, color);
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(color);
-  canvas.setCursor(x + 14, 201);
-  canvas.print(status.text);
-  canvas.setTextColor(eyeColor);
-  canvas.setCursor(x + 14, 218);
-  if (scene.eventTitle[0]) {
-    char title[48];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 46);
-    canvas.print(title);
-  } else {
-    canvas.print(reelDetail(scene));
-  }
-  if (scene.phase == ReelPhase::Attention) {
-    canvas.drawRoundRect(x, 194, width, 42, 7, color);
-  }
-}
-
-void drawTakeoverCopy(const ReelScene& scene, float visibility) {
-  const int16_t bottom = std::lround(178.0F * visibility);
-  const uint16_t color = reelPhaseColor(scene);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, bottom, logoBackground);
-  canvas.fillRect(0, 0, 7, bottom, color);
-  if (bottom > 1) {
-    canvas.fillRect(0, bottom - 2, SCREEN_WIDTH, 2, color);
-  }
-  if (visibility < 0.82F) {
-    return;
-  }
-
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(color);
-  canvas.setCursor(20, 12);
-  canvas.print(scene.phase == ReelPhase::Message ? "NEW MESSAGE" : "NEEDS YOU");
-  canvas.setTextSize(1);
-  canvas.setTextColor(textureColor);
-  char project[18];
-  copyEllipsized(project, sizeof(project), reelProject(scene), 16);
-  canvas.setCursor(300 - std::strlen(project) * 6, 18);
-  canvas.print(project);
-
-  char firstLine[25];
-  char secondLine[25];
-  splitTitle(scene.eventTitle, firstLine, secondLine);
-  drawCenteredText(firstLine, 48, 2, eyeColor);
-  if (secondLine[0]) {
-    drawCenteredText(secondLine, 70, 2, eyeColor);
-  }
-  drawCenteredText(reelDetail(scene), 108, 1, eyeColor);
-  drawCenteredText(scene.phase == ReelPhase::Attention
-                       ? "PRESS TO REVIEW"
-                       : "PRESS TO OPEN THREAD",
-                   145, 1, color);
-}
-
-void drawDesignCurrent(const ReelScene& scene) {
-  if (scene.phase == ReelPhase::Attention) {
-    drawAttentionPulse(scene.phaseElapsed % NOTIFICATION_DURATION_MS);
-    return;
-  }
-  if (scene.phase == ReelPhase::Working &&
-      scene.phaseElapsed < NOTIFICATION_DURATION_MS) {
-    drawStatusNotification(scene.phaseElapsed, NotificationKind::ThreadActive,
-                           scene.eventTitle, scene.stats);
-    return;
-  }
-  if (scene.phase == ReelPhase::Message &&
-      scene.phaseElapsed < NOTIFICATION_DURATION_MS) {
-    drawStatusNotification(scene.phaseElapsed, NotificationKind::Message,
-                           scene.eventTitle, scene.stats);
-    return;
-  }
-  drawFace(reelPose(scene));
-  drawStatsPanel(scene.stats);
-}
-
-void drawDesignMarquee(const ReelScene& scene) {
-  FacePose pose = reelPose(scene);
-  pose.yOffset = -22.0F;
-  drawFace(pose);
-
-  constexpr int16_t bandY = 182;
-  const ReelStatus status = reelStatus(scene);
-  const bool invert = scene.phase == ReelPhase::Attention ||
-                      ((scene.phase == ReelPhase::Working ||
-                        scene.phase == ReelPhase::Message) &&
-                       scene.phaseElapsed < 1400);
-  canvas.fillRect(0, bandY, SCREEN_WIDTH, SCREEN_HEIGHT - bandY,
-                  invert ? status.color : logoBackground);
-  canvas.fillRect(0, bandY, SCREEN_WIDTH, 3, status.color);
-  drawCenteredText(status.text, bandY + 13, 3,
-                   invert ? logoBackground : status.color);
-  if (scene.eventTitle[0]) {
-    char title[38];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 35);
-    drawCenteredText(title, bandY + 44, 1,
-                     invert ? logoBackground : eyeColor);
-  }
-}
-
-void drawDesignHeadline(const ReelScene& scene) {
-  drawFaceBackground();
-  uint16_t count = scene.stats.idle;
-  const char* label = "THREADS IDLE";
-  const ReelStatus status = reelStatus(scene);
-  if (scene.phase == ReelPhase::Working) {
-    count = scene.stats.working;
-    label = "THREADS WORKING";
-  } else if (scene.phase == ReelPhase::Message) {
-    count = scene.stats.unread;
-    label = "NEW MESSAGE";
-  } else if (scene.phase == ReelPhase::Attention) {
-    count = scene.stats.needsAttention;
-    label = "THREADS NEED YOU";
-  }
-
-  if (scene.phase == ReelPhase::Resolved) {
-    drawCenteredText("ALL CLEAR", 40, 5, status.color);
-  } else {
-    char number[8];
-    std::snprintf(number, sizeof(number), "%u", count);
-    drawCenteredText(number, 12, 7, status.color);
-    drawCenteredText(label, 76, 2, status.color);
-  }
-  if (scene.eventTitle[0]) {
-    drawCenteredText("LATEST", 112, 1, textureColor);
-    char firstLine[25];
-    char secondLine[25];
-    splitTitle(scene.eventTitle, firstLine, secondLine);
-    drawCenteredText(firstLine, 126, 2, eyeColor);
-    if (secondLine[0]) {
-      drawCenteredText(secondLine, 148, 2, eyeColor);
-    }
-  }
-
-  FacePose eyes = reelPose(scene);
-  eyes.yOffset = 152.0F;
-  eyes.gazeY = -0.75F;
-  drawEye(124, eyes.leftEyeOpen, eyes);
-  drawEye(196, eyes.rightEyeOpen, eyes);
-}
-
-void drawReelBadge(int16_t x, int16_t y, uint16_t value, const char* label,
-                   uint16_t color, bool selected) {
-  const uint16_t background = selected ? color : faceShadowColor;
-  const uint16_t foreground = selected ? logoBackground
-                                       : (value ? color : logoHighlightColor);
-  canvas.fillRoundRect(x, y, 76, 44, 7, background);
-  canvas.drawRoundRect(x, y, 76, 44, 7,
-                       selected ? color : logoHighlightColor);
-  char count[8];
-  std::snprintf(count, sizeof(count), "%u", value);
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(foreground);
-  canvas.setCursor(x + 7, y + 5);
-  canvas.print(count);
-  canvas.setTextSize(1);
-  canvas.setCursor(x + 7, y + 29);
-  canvas.print(label);
-}
-
-void drawDesignBadges(const ReelScene& scene) {
-  drawFace(reelPose(scene));
-  drawReelBadge(6, 4, scene.stats.working, "WORKING", reelGreenColor(),
-                scene.phase == ReelPhase::Working);
-  drawReelBadge(238, 4, scene.stats.unread, "NEW MSGS", unreadColor,
-                scene.phase == ReelPhase::Message);
-  drawReelBadge(6, 192, scene.stats.needsAttention, "NEED YOU", accentColor,
-                scene.phase == ReelPhase::Attention);
-  drawReelBadge(238, 192, scene.stats.idle, "IDLE", eyeColor, false);
-}
-
-void drawDesignTicker(const ReelScene& scene, uint32_t elapsed) {
-  FacePose pose = reelPose(scene);
-  pose.yOffset = -16.0F;
-  drawFace(pose);
-
-  constexpr int16_t tickerY = 198;
-  const ReelStatus status = reelStatus(scene);
-  const bool flash = scene.phase != ReelPhase::Idle &&
-                     scene.phase != ReelPhase::Resolved &&
-                     scene.phaseElapsed < 900;
-  canvas.fillRect(0, tickerY, SCREEN_WIDTH, SCREEN_HEIGHT - tickerY,
-                  flash ? status.color : logoBackground);
-  canvas.fillRect(0, tickerY, SCREEN_WIDTH, 3, status.color);
-  char ticker[200] = "";
-  for (uint8_t index = 0; index < scene.stats.threadCount; ++index) {
-    const AmpThreadSummary& thread = scene.stats.threads[index];
-    char item[65];
-    std::snprintf(item, sizeof(item), "%s: %.42s%s",
-                  threadStateLabel(thread.state), thread.title,
-                  index + 1 < scene.stats.threadCount ? "  *  " : "  *  ");
-    std::strncat(ticker, item, sizeof(ticker) - std::strlen(ticker) - 1);
-  }
-  if (!ticker[0]) {
-    std::snprintf(ticker, sizeof(ticker), "%s  *  ", status.text);
-  }
-  const int16_t width = std::max<int16_t>(12, std::strlen(ticker) * 12);
-  const int16_t offset = (elapsed / 12) % width;
-  canvas.setTextWrap(false);
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(flash ? logoBackground : eyeColor);
-  canvas.setCursor(-offset, tickerY + 13);
-  canvas.print(ticker);
-  canvas.setCursor(width - offset, tickerY + 13);
-  canvas.print(ticker);
-  canvas.setTextWrap(true);
-}
-
-void drawDesignRing(const ReelScene& scene, uint32_t elapsed) {
-  drawFace(reelPose(scene));
-  uint8_t slot = 0;
-  for (uint8_t index = 0; index < 12; ++index) {
-    uint16_t color = faceShadowColor;
-    if (slot < scene.stats.working) {
-      color = reelGreenColor();
-    } else if (slot < scene.stats.working + scene.stats.unread) {
-      color = unreadColor;
-    } else if (slot < scene.stats.working + scene.stats.unread +
-                          scene.stats.needsAttention) {
-      color = accentColor;
-    } else if (slot < scene.stats.working + scene.stats.unread +
-                          scene.stats.needsAttention + scene.stats.idle) {
-      color = logoHighlightColor;
-    }
-    const float angle = elapsed * 0.00015F +
-                        FULL_ROTATION_RADIANS * index / 12.0F;
-    const int16_t x = 160 + std::lround(std::cos(angle) * 108.0F);
-    const int16_t y = 120 + std::lround(std::sin(angle) * 108.0F);
-    const int16_t radius =
-        color == accentColor ? 6 + std::lround(scene.beat * 3.0F) : 6;
-    canvas.fillCircle(x, y, radius, color);
-    ++slot;
-  }
-}
-
-void drawDesignSplit(const ReelScene& scene) {
-  FacePose pose = reelPose(scene);
-  pose.yOffset = -40.0F;
-  drawFace(pose);
-  constexpr int16_t panelY = 150;
-  const ReelStatus status = reelStatus(scene);
-  canvas.fillRect(0, panelY, SCREEN_WIDTH, SCREEN_HEIGHT - panelY,
-                  scene.phase == ReelPhase::Attention ? accentColor
-                                                      : logoBackground);
-  canvas.fillRect(0, panelY, SCREEN_WIDTH, 2,
-                  scene.phase == ReelPhase::Attention ? logoBackground
-                                                      : status.color);
-  if (scene.phase == ReelPhase::Message) {
-    float visibility = smoothStep(scene.phaseElapsed / 500.0F);
-    if (scene.phaseElapsed > REEL_MESSAGE_MS - 700) {
-      visibility *= 1.0F - smoothStep(
-          (scene.phaseElapsed - (REEL_MESSAGE_MS - 700)) / 700.0F);
-    }
-    const int16_t y = std::lround(mix(240.0F, 158.0F, visibility));
-    const uint16_t paper = display.color565(239, 236, 203);
-    canvas.fillRoundRect(16, y, 288, 84, 8, paper);
-    canvas.fillRect(16, y, 14, 84, unreadColor);
-    canvas.setFont();
-    canvas.setTextColor(pupilColor);
-    canvas.setTextSize(2);
-    canvas.setCursor(42, y + 10);
-    canvas.print("NEW MESSAGE");
-    char title[45];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 42);
-    canvas.setTextSize(1);
-    canvas.setCursor(42, y + 38);
-    canvas.print(title);
-    canvas.setCursor(42, y + 61);
-    canvas.print("PRESS TO OPEN THREADS");
-    return;
-  }
-  uint16_t count = scene.stats.idle;
-  if (scene.phase == ReelPhase::Working) count = scene.stats.working;
-  if (scene.phase == ReelPhase::Attention) count = scene.stats.needsAttention;
-  char number[8];
-  std::snprintf(number, sizeof(number), "%u", count);
-  canvas.setFont();
-  canvas.setTextSize(6);
-  canvas.setTextColor(scene.phase == ReelPhase::Attention ? logoBackground
-                                                          : status.color);
-  canvas.setCursor(24, 172);
-  canvas.print(number);
-  canvas.setTextSize(2);
-  canvas.setCursor(120, 176);
-  canvas.print(status.text);
-  if (scene.eventTitle[0]) {
-    char title[33];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 30);
-    canvas.setTextSize(1);
-    canvas.setCursor(120, 202);
-    canvas.print(title);
-  }
-}
-
-void drawDesignPoster(const ReelScene& scene) {
-  canvas.fillScreen(logoBackground);
-  struct PosterRow {
-    uint16_t value;
-    const char* label;
-    uint16_t color;
-  };
-  const PosterRow rows[4] = {
-      {scene.stats.working, "WORKING", reelGreenColor()},
-      {scene.stats.unread, "NEW MSGS", unreadColor},
-      {scene.stats.needsAttention, "NEED YOU", accentColor},
-      {scene.stats.idle, "IDLE", eyeColor},
-  };
-  int8_t selected = -1;
-  if (scene.phase == ReelPhase::Working) selected = 0;
-  if (scene.phase == ReelPhase::Message) selected = 1;
-  if (scene.phase == ReelPhase::Attention) selected = 2;
-  for (uint8_t row = 0; row < 4; ++row) {
-    const int16_t y = 14 + row * 50;
-    if (selected == row) {
-      canvas.fillRect(0, y - 4, std::lround(SCREEN_WIDTH * scene.intro), 42,
-                      rows[row].color);
-    }
-    char line[24];
-    std::snprintf(line, sizeof(line), "%u %s", rows[row].value,
-                  rows[row].label);
-    canvas.setFont();
-    canvas.setTextSize(3);
-    canvas.setTextColor(selected == row ? logoBackground
-                                        : (rows[row].value ? rows[row].color
-                                                           : logoHighlightColor));
-    canvas.setCursor(18, y);
-    canvas.print(line);
-  }
-  FacePose eyes = reelPose(scene);
-  eyes.eyeScale = 0.38F;
-  eyes.pupilScale = 0.5F;
-  eyes.yOffset = -67.0F;
-  eyes.gazeY = selected < 0 ? 0.0F : mix(-0.8F, 0.8F, selected / 3.0F);
-  drawEye(266, 1.0F, eyes);
-  drawEye(298, 1.0F, eyes);
-  if (scene.eventTitle[0]) {
-    char title[47];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 45);
-    canvas.setTextSize(1);
-    canvas.setTextColor(eyeColor);
-    canvas.setCursor(18, 222);
-    canvas.print(title);
-  }
-}
-
-void drawDesignTerminal(const ReelScene& scene, uint32_t elapsed) {
-  canvas.fillScreen(logoBackground);
-  const uint16_t green = reelGreenColor();
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(green);
-  canvas.setCursor(12, 8);
-  canvas.print("PUCK://MAIN");
-  FacePose eyes = reelPose(scene);
-  eyes.eyeScale = 0.35F;
-  eyes.pupilScale = 0.5F;
-  eyes.yOffset = -68.0F;
-  drawEye(272, 1.0F, eyes);
-  drawEye(302, 1.0F, eyes);
-  canvas.drawFastHLine(10, 34, 300, logoHighlightColor);
-
-  const auto printLine = [&](int16_t y, const char* prefix, const char* text,
-                             uint16_t color) {
-    char clipped[26];
-    copyEllipsized(clipped, sizeof(clipped), text, 23);
-    canvas.setFont();
-    canvas.setTextSize(2);
-    canvas.setTextColor(color);
-    canvas.setCursor(12, y);
-    canvas.print(prefix);
-    canvas.print(clipped);
-  };
-  int16_t y = 44;
-  char tracked[24];
-  std::snprintf(tracked, sizeof(tracked), "%u threads tracked",
-                scene.stats.total);
-  printLine(y, "> ", tracked, eyeColor);
-  y += 24;
-  if (scene.phase >= ReelPhase::Working) {
-    printLine(y, "> run  ", scene.stats.threads[0].title, green);
-    y += 24;
-  }
-  if (scene.phase >= ReelPhase::Message) {
-    printLine(y, "> mail ", scene.stats.threads[0].title, unreadColor);
-    y += 24;
-  }
-  if (scene.phase >= ReelPhase::Attention) {
-    printLine(y, "> ATTN ", "approval needed", accentColor);
-    y += 24;
-  }
-  if (scene.phase == ReelPhase::Resolved) {
-    printLine(y, "> done ", "all clear", green);
-    y += 24;
-  }
-  if ((elapsed / 400) % 2 == 0) {
-    canvas.fillRect(12, y + 2, 12, 18, green);
-  }
-}
-
-void drawDesignGauge(const ReelScene& scene, uint32_t elapsed) {
-  canvas.fillScreen(logoBackground);
-  const ReelStatus status = reelStatus(scene);
-  drawCenteredText(status.text, 14, 3, status.color);
-  if (scene.eventTitle[0]) {
-    char title[43];
-    copyEllipsized(title, sizeof(title), scene.eventTitle, 40);
-    drawCenteredText(title, 50, 1, eyeColor);
-  }
-  FacePose eyes = reelPose(scene);
-  eyes.eyeScale = 0.55F;
-  eyes.pupilScale = 0.7F;
-  eyes.yOffset = -15.0F;
-  drawEye(132, 1.0F, eyes);
-  drawEye(188, 1.0F, eyes);
-
-  float urgency = 0.08F + std::sin(elapsed * 0.001F) * 0.02F;
-  if (scene.phase == ReelPhase::Working) {
-    urgency = 0.38F + std::sin(elapsed * 0.002F) * 0.05F;
-  } else if (scene.phase == ReelPhase::Message) {
-    urgency = 0.6F;
-  } else if (scene.phase == ReelPhase::Attention) {
-    urgency = 0.9F + std::sin(elapsed * 0.03F) * 0.04F;
-  } else if (scene.phase == ReelPhase::Resolved) {
-    urgency = 0.12F;
-  }
-  constexpr float HALF_TURN = 3.141592654F;
-  for (uint8_t dot = 0; dot < 13; ++dot) {
-    const float angle = HALF_TURN - HALF_TURN * dot / 12.0F;
-    const int16_t x = 160 + std::lround(std::cos(angle) * 84.0F);
-    const int16_t y = 218 - std::lround(std::sin(angle) * 84.0F);
-    const uint16_t color = dot < 5 ? reelGreenColor()
-                           : dot < 9 ? unreadColor
-                                     : accentColor;
-    canvas.fillCircle(x, y, 5, color);
-  }
-  const float needleAngle = HALF_TURN * (1.0F - clamp01(urgency));
-  const int16_t needleX = 160 + std::lround(std::cos(needleAngle) * 62.0F);
-  const int16_t needleY = 218 - std::lround(std::sin(needleAngle) * 62.0F);
-  drawThickLine(160, 218, needleX, needleY, eyeColor, 5);
-  canvas.fillCircle(160, 218, 9, eyeColor);
-  canvas.fillCircle(160, 218, 4, logoBackground);
-}
-
 void drawDesignMinimal(const ReelScene& scene) {
   drawFace(reelPose(scene));
   const ReelStatus status = reelStatus(scene);
-  const int16_t groupWidth = selectedTextWidth(status.text, 2) + 18;
+  uint16_t textWidth;
+  uint16_t textHeight;
+  selectedTextDimensions(status.text, 2, textWidth, textHeight);
+  const int16_t groupWidth = textWidth + 18;
   const int16_t x = (SCREEN_WIDTH - groupWidth) / 2;
-  canvas.fillCircle(x + 5, 228, 5, status.color);
-  drawSelectedText(status.text, x + 18, 220, 2, status.color);
+  constexpr int16_t statusY = 210;
+  canvas.fillCircle(x + 5, statusY + textHeight / 2, 5, status.color);
+  drawSelectedText(status.text, x + 18, statusY, 2, status.color);
   if (scene.phase == ReelPhase::Attention) {
     const int16_t edge = 3 + std::lround(scene.beat * 5.0F);
     canvas.fillRect(0, 0, SCREEN_WIDTH, edge, accentColor);
@@ -2301,413 +1708,74 @@ void drawReelEventTitle(const ReelScene& scene, int16_t y, uint16_t color) {
   }
 }
 
-void drawWatchingEyes(const ReelScene& scene, int16_t yOffset = 152) {
-  FacePose eyes = reelPose(scene);
-  eyes.yOffset = yOffset;
-  eyes.gazeY = -0.82F;
-  eyes.eyeScale = scene.phase == ReelPhase::Attention ? 1.12F : 1.0F;
-  drawEye(124, eyes.leftEyeOpen, eyes);
-  drawEye(196, eyes.rightEyeOpen, eyes);
+void drawShippedTitle(const char* title, int16_t y, uint16_t color,
+                      uint16_t bodyColor) {
+  drawCenteredText("SHIPPED!", y, 5, color);
+  char clipped[39];
+  copyEllipsized(clipped, sizeof(clipped),
+                 title && title[0] ? title : "Amp thread", 36);
+  drawCenteredText(clipped, y + 58, 1, bodyColor);
 }
 
-// BILLBOARD — no chrome and no polite shelf. A notification becomes a bold
-// full-screen poster, while Puck's eyes remain at the foot of the display.
-void drawDesignBillboard(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  if (show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t width = std::lround(SCREEN_WIDTH * show);
-  drawDesignMinimal(scene);
-  canvas.fillRect(0, 0, width, SCREEN_HEIGHT, color);
-  if (show < 0.78F) {
-    return;
-  }
-  const uint16_t ink = logoBackground;
-  drawCenteredText(reelEventHeadline(scene), 18, 4, ink);
-  canvas.fillRect(28, 66, 264, 3, ink);
-  drawReelEventTitle(scene, 82, ink);
-  drawCenteredText(scene.phase == ReelPhase::Attention
-                       ? "PRESS TO HANDLE IT"
-                       : reelDetail(scene),
-                   142, 1, ink);
-  drawWatchingEyes(scene, 151);
-}
+void drawShippedLiftoff(uint32_t elapsed, const char* title) {
+  const uint16_t sky = display.color565(7, 17, 31);
+  const uint16_t flame = display.color565(255, 116, 43);
+  const uint16_t hot = display.color565(255, 211, 92);
+  const uint16_t smoke = display.color565(101, 119, 125);
+  const uint16_t hull = display.color565(231, 231, 207);
+  canvas.fillScreen(sky);
 
-// IRIS — the status dot on Minimal swells until it owns the screen. The
-// transition feels like Puck has suddenly focused on one important thing.
-void drawDesignIris(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
+  for (uint8_t star = 0; star < 24; ++star) {
+    const uint32_t h = reelHash(star + 700);
+    const int16_t x = h % SCREEN_WIDTH;
+    const int16_t y = (h >> 9) % 176;
+    const uint8_t radius = ((elapsed / 180 + star) % 4 == 0) ? 2 : 1;
+    canvas.fillCircle(x, y, radius, eyeColor);
   }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t radius = std::lround(8.0F + 215.0F * show);
-  canvas.fillCircle(160, 118, radius, color);
-  canvas.drawCircle(160, 118, std::max<int16_t>(1, radius - 7),
-                    logoBackground);
-  if (show < 0.76F) {
-    return;
-  }
-  drawCenteredText(reelEventHeadline(scene), 34, 3, logoBackground);
-  drawReelEventTitle(scene, 82, logoBackground);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "PUCK NEEDS A HAND"
-                                                        : reelDetail(scene),
-                   139, 1, logoBackground);
-  FacePose eyes = reelPose(scene);
-  eyes.eyeScale = 0.66F;
-  eyes.pupilScale = 0.76F;
-  eyes.yOffset = 73.0F;
-  eyes.gazeY = -0.65F;
-  drawEye(133, eyes.leftEyeOpen, eyes);
-  drawEye(187, eyes.rightEyeOpen, eyes);
-}
 
-// PAPER — a physical dispatch drops over the face, overshoots, and settles.
-// It deliberately looks unlike the screen underneath it.
-void drawDesignPaper(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
+  const float launch = smoothStep((static_cast<float>(elapsed) - 350.0F) /
+                                  2550.0F);
+  const int16_t rocketY = std::lround(mix(154.0F, -82.0F, launch));
+  const int16_t wobble = std::lround(std::sin(elapsed * 0.018F) * 2.0F);
+  const int16_t rocketX = 160 + wobble;
+  if (launch < 0.98F) {
+    const int16_t flameLength = 24 + ((elapsed / 70) % 3) * 8;
+    canvas.fillTriangle(rocketX - 12, rocketY + 61, rocketX + 12,
+                        rocketY + 61, rocketX, rocketY + 61 + flameLength,
+                        flame);
+    canvas.fillTriangle(rocketX - 6, rocketY + 59, rocketX + 6,
+                        rocketY + 59, rocketX, rocketY + 70 + flameLength / 2,
+                        hot);
+    canvas.fillRoundRect(rocketX - 18, rocketY + 12, 36, 50, 15, hull);
+    canvas.fillTriangle(rocketX - 18, rocketY + 24, rocketX,
+                        rocketY - 13, rocketX + 18, rocketY + 24, hull);
+    canvas.fillTriangle(rocketX - 18, rocketY + 45, rocketX - 29,
+                        rocketY + 65, rocketX - 16, rocketY + 61, flame);
+    canvas.fillTriangle(rocketX + 18, rocketY + 45, rocketX + 29,
+                        rocketY + 65, rocketX + 16, rocketY + 61, flame);
+    canvas.fillCircle(rocketX, rocketY + 28, 8, unreadColor);
+    canvas.drawCircle(rocketX, rocketY + 28, 9, sky);
   }
-  const float settle = 1.0F - std::exp(-scene.phaseElapsed * 0.006F) *
-                                  std::cos(scene.phaseElapsed * 0.016F);
-  const int16_t y = std::lround(mix(-250.0F, 7.0F, settle) +
-                                  (1.0F - show) * 250.0F);
-  const uint16_t paper = display.color565(236, 231, 197);
-  const uint16_t ink = display.color565(31, 36, 26);
-  const uint16_t color = reelPhaseColor(scene);
-  canvas.fillRoundRect(15, y + 5, 294, 224, 9, faceShadowColor);
-  canvas.fillRoundRect(10, y, 294, 224, 9, paper);
-  canvas.fillRect(10, y, 294, 12, color);
-  canvas.setFont();
-  canvas.setTextColor(ink);
-  canvas.setTextSize(1);
-  canvas.setCursor(25, y + 24);
-  canvas.print("AMP DISPATCH / ");
-  canvas.print(reelProject(scene));
-  canvas.drawFastHLine(24, y + 41, 266, ink);
-  drawCenteredText(reelEventHeadline(scene), y + 54, 4, ink);
-  drawReelEventTitle(scene, y + 105, ink);
-  canvas.drawFastHLine(24, y + 158, 266, ink);
-  drawCenteredText(scene.phase == ReelPhase::Attention
-                       ? "ACTION REQUIRED - PRESS"
-                       : reelDetail(scene),
-                   y + 174, 1, ink);
-  canvas.fillCircle(276, y + 194, 15, color);
-  canvas.drawCircle(276, y + 194, 10, paper);
-}
 
-// COMIC — Puck reacts with one huge speech balloon rather than UI panels.
-void drawDesignComicFull(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 54.0F * show;
-  pose.eyeScale += 0.12F * show;
-  drawFace(pose);
-  if (show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
+  for (uint8_t puff = 0; puff < 13; ++puff) {
+    const uint32_t h = reelHash(puff + 760);
+    const float age = clamp01((static_cast<float>(elapsed) - 300.0F -
+                               puff * 45.0F) /
+                              1050.0F);
+    const int16_t x = 160 + static_cast<int16_t>(h % 67) - 33 +
+                      std::lround(std::sin(puff * 2.1F) * age * 18.0F);
+    const int16_t y = 219 - std::lround(age * 23.0F) + (h >> 8) % 13;
+    canvas.fillCircle(x, y, 5 + std::lround(age * 9.0F),
+                      puff % 2 ? smoke : faceShadowColor);
   }
-  const uint16_t paper = scene.phase == ReelPhase::Attention
-                             ? accentColor
-                             : display.color565(238, 234, 202);
-  const uint16_t ink = display.color565(31, 35, 25);
-  const int16_t y = std::lround(mix(-150.0F, 5.0F, show));
-  canvas.fillRoundRect(8, y, 304, 145, 18, paper);
-  canvas.fillTriangle(136, y + 142, 184, y + 142, 160, y + 174, paper);
-  drawCenteredText(scene.phase == ReelPhase::Working
-                       ? "I'M ON IT."
-                       : scene.phase == ReelPhase::Message
-                             ? "OH! MAIL."
-                             : scene.phase == ReelPhase::Attention
-                                   ? "UM. JAN?"
-                                   : "WE DID IT.",
-                   y + 16, 4, ink);
-  drawReelEventTitle(scene, y + 67, ink);
-  drawCenteredText(scene.phase == ReelPhase::Attention
-                       ? "THIS ONE ACTUALLY NEEDS YOU"
-                       : reelDetail(scene),
-                   y + 117, 1, ink);
-}
 
-void drawHazardStripes(uint16_t color, int16_t offset) {
-  for (int16_t x = -50; x < SCREEN_WIDTH + 50; x += 38) {
-    canvas.fillTriangle(x + offset, 0, x + 18 + offset, 0,
-                        x - 18 + offset, 22, color);
-    canvas.fillTriangle(x - 18 + offset, 218, x + 18 + offset, 240,
-                        x + offset, 240, color);
+  if (elapsed > 2450) {
+    canvas.fillRoundRect(9, 12, 302, 99, 12, logoBackground);
+    canvas.drawRoundRect(9, 12, 302, 99, 12, hot);
+    drawShippedTitle(title, 18, hot, eyeColor);
   }
-}
-
-// SIREN — every event has a different visual grammar: scanning work lanes,
-// an expanding blue mail slot, and unmistakable amber hazard stripes.
-void drawDesignSiren(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  if (scene.phase == ReelPhase::Working) {
-    for (uint8_t lane = 0; lane < 5; ++lane) {
-      const int16_t y = 15 + lane * 46;
-      const int16_t run = ((scene.phaseElapsed / 5 + lane * 53) % 390) - 70;
-      canvas.fillRoundRect(run, y, 74, 9, 4, color);
-    }
-  } else if (scene.phase == ReelPhase::Message) {
-    const int16_t h = std::lround(178.0F * show);
-    canvas.fillRoundRect(7, (SCREEN_HEIGHT - h) / 2, 306, h, 10, color);
-    canvas.drawLine(8, (SCREEN_HEIGHT - h) / 2,
-                    160, (SCREEN_HEIGHT + h) / 2, logoBackground);
-    canvas.drawLine(312, (SCREEN_HEIGHT - h) / 2,
-                    160, (SCREEN_HEIGHT + h) / 2, logoBackground);
-  } else if (scene.phase == ReelPhase::Attention) {
-    drawHazardStripes(color, (scene.phaseElapsed / 18) % 38);
-    const int16_t edge = 5 + std::lround(scene.beat * 7.0F);
-    canvas.drawRect(edge, edge, SCREEN_WIDTH - edge * 2,
-                    SCREEN_HEIGHT - edge * 2, color);
-  } else {
-    for (uint8_t ray = 0; ray < 12; ++ray) {
-      const float angle = FULL_ROTATION_RADIANS * ray / 12.0F;
-      canvas.drawLine(160 + std::cos(angle) * 45,
-                      120 + std::sin(angle) * 45,
-                      160 + std::cos(angle) * 145,
-                      120 + std::sin(angle) * 145, color);
-    }
-  }
-  if (show > 0.7F) {
-    canvas.fillRoundRect(20, 63, 280, 114, 10, logoBackground);
-    canvas.drawRoundRect(20, 63, 280, 114, 10, color);
-    drawCenteredText(reelEventHeadline(scene), 76, 3, color);
-    drawReelEventTitle(scene, 116, eyeColor);
-    drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS TO RESPOND"
-                                                          : reelDetail(scene),
-                     158, 1, color);
-  }
-}
-
-// PEEK — the strongest version of the original Watch idea. Giant copy pushes
-// Puck completely below the fold; only bewildered eyes remain on duty.
-void drawDesignPeek(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 142.0F * show;
-  pose.gazeY = mix(pose.gazeY, -0.88F, show);
-  drawFace(pose);
-  if (show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t panelBottom = std::lround(184.0F * show);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, panelBottom, logoBackground);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, 10, color);
-  if (show < 0.72F) {
-    return;
-  }
-  drawCenteredText(reelEventHeadline(scene), 20, 5, color);
-  drawReelEventTitle(scene, 84, eyeColor);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS. I'LL WATCH."
-                                                        : reelDetail(scene),
-                   145, 1, color);
-}
-
-// STAMP — a restrained cream notice that becomes playful through an enormous
-// offset status stamp landing over the thread title.
-void drawDesignStamp(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t paper = display.color565(232, 227, 194);
-  const uint16_t ink = display.color565(38, 42, 30);
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t x = std::lround(mix(330.0F, 7.0F, show));
-  canvas.fillRect(x, 5, 306, 230, paper);
-  canvas.fillRect(x, 5, 9, 230, color);
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(ink);
-  canvas.setCursor(x + 25, 22);
-  canvas.print("POCKETPUCK / EVENT NOTICE");
-  canvas.drawFastHLine(x + 25, 41, 256, ink);
-  drawReelEventTitle(scene, 57, ink);
-  drawCenteredText(reelProject(scene), 112, 1, ink);
-  const float stamp = smoothStep((scene.phaseElapsed - 380) / 250.0F);
-  const int16_t stampY = std::lround(mix(-60.0F, 137.0F, stamp));
-  canvas.drawRoundRect(x + 31, stampY, 244, 54, 7, color);
-  canvas.drawRoundRect(x + 34, stampY + 3, 238, 48, 5, color);
-  drawCenteredText(reelEventHeadline(scene), stampY + 11, 3, color);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS TO REVIEW"
-                                                        : reelDetail(scene),
-                   211, 1, ink);
-}
-
-// BLOCKS — chunky color tiles crash together to spell out the event, then
-// separate again. It is intentionally graphic and toy-like.
-void drawDesignBlocks(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t left = std::lround(mix(-170.0F, 0.0F, show));
-  const int16_t right = std::lround(mix(320.0F, 160.0F, show));
-  canvas.fillRect(left, 0, 160, 240, color);
-  canvas.fillRect(right, 0, 160, 240, color);
-  for (uint8_t row = 0; row < 4; ++row) {
-    const int16_t y = 16 + row * 58;
-    canvas.fillRect(row % 2 ? left + 8 : right + 8, y, 144, 5,
-                    logoBackground);
-  }
-  if (show < 0.74F) {
-    return;
-  }
-  drawCenteredText(reelEventHeadline(scene), 25, 4, logoBackground);
-  canvas.fillRoundRect(17, 79, 286, 91, 8, logoBackground);
-  drawReelEventTitle(scene, 94, eyeColor);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS TO UNBLOCK"
-                                                        : reelDetail(scene),
-                   145, 1, color);
-  drawWatchingEyes(scene, 153);
-}
-
-// JUKEBOX — the home face stays calm, then the event arrives like a title
-// card from an animated show, complete with bouncing dots and a Puck cameo.
-void drawDesignJukebox(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  canvas.fillScreen(logoBackground);
-  for (uint8_t dot = 0; dot < 18; ++dot) {
-    const uint32_t h = reelHash(dot + static_cast<uint8_t>(scene.phase) * 31);
-    const float bounce = std::abs(std::sin(scene.phaseElapsed * 0.004F + dot));
-    const int16_t x = 7 + h % 307;
-    const int16_t y = 8 + (h >> 9) % 220;
-    canvas.fillCircle(x, y - std::lround(bounce * 8.0F), 3, color);
-  }
-  const float pop = std::min(1.18F, reelCardSettle(scene.phaseElapsed));
-  const int16_t width = std::lround(286.0F * std::min(1.0F, pop));
-  const int16_t x = (SCREEN_WIDTH - width) / 2;
-  canvas.fillRoundRect(x, 23, width, 166, 18, color);
-  if (show > 0.7F) {
-    drawCenteredText(scene.phase == ReelPhase::Working
-                         ? "GO GO GO"
-                         : scene.phase == ReelPhase::Message
-                               ? "DING!"
-                               : scene.phase == ReelPhase::Attention
-                                     ? "HEY!"
-                                     : "NICE.",
-                     39, 5, logoBackground);
-    drawCenteredText(reelEventHeadline(scene), 98, 2, logoBackground);
-    drawReelEventTitle(scene, 127, logoBackground);
-    drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS FOR THE PLOT"
-                                                          : reelDetail(scene),
-                     172, 1, logoBackground);
-  }
-  FacePose eyes = reelPose(scene);
-  eyes.eyeScale = 0.52F;
-  eyes.pupilScale = 0.65F;
-  eyes.yOffset = 92.0F;
-  eyes.gazeY = -0.75F;
-  drawEye(137, eyes.leftEyeOpen, eyes);
-  drawEye(183, eyes.rightEyeOpen, eyes);
-}
-
-void drawEventPanelCopy(const ReelScene& scene, int16_t headlineY,
-                        int16_t titleY, int16_t actionY, uint16_t headline,
-                        uint16_t body) {
-  drawCenteredText(reelEventHeadline(scene), headlineY,
-                   reelHeadlineSize(scene), headline);
-  drawReelEventTitle(scene, titleY, body);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "PRESS TO RESPOND"
-                                                        : reelDetail(scene),
-                   actionY, 1, headline);
-}
-
-// AIRLOCK — two heavy doors close around the event while Puck watches through
-// the remaining viewport. Working glides; attention shudders on impact.
-void drawDesignAirlock(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t travel = std::lround(92.0F * show);
-  const int16_t shudder = scene.phase == ReelPhase::Attention
-                              ? std::lround(std::sin(scene.phaseElapsed * 0.08F) *
-                                            3.0F * scene.beat)
-                              : 0;
-  canvas.fillRect(0, -92 + travel + shudder, SCREEN_WIDTH, 92, color);
-  canvas.fillRect(0, 240 - travel - shudder, SCREEN_WIDTH, 92, color);
-  for (int16_t x = 12; x < SCREEN_WIDTH; x += 42) {
-    canvas.fillRect(x, -84 + travel + shudder, 24, 3, logoBackground);
-    canvas.fillRect(x, 315 - travel - shudder, 24, 3, logoBackground);
-  }
-  if (show < 0.72F) {
-    return;
-  }
-  canvas.fillRoundRect(12, 70, 296, 102, 9, logoBackground);
-  canvas.drawRoundRect(12, 70, 296, 102, 9, color);
-  drawCenteredText(reelEventHeadline(scene), 79, 3, color);
-  drawReelEventTitle(scene, 116, eyeColor);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "AIRLOCKED - PRESS"
-                                                        : reelDetail(scene),
-                   154, 1, color);
-  drawWatchingEyes(scene, 151);
-}
-
-// BROADCAST — Puck interrupts normal programming with a giant, readable news
-// bulletin. The face becomes the deadpan field reporter in the corner.
-void drawDesignBroadcast(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t wipe = std::lround(SCREEN_HEIGHT * show);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, wipe, logoBackground);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, std::min<int16_t>(46, wipe), color);
-  if (show < 0.72F) {
-    return;
-  }
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "BREAKING: YOUR MOVE"
-                                                        : reelEventHeadline(scene),
-                   13, scene.phase == ReelPhase::Attention ? 2 : 3,
-                   logoBackground);
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(textureColor);
-  canvas.setCursor(14, 58);
-  canvas.print("LIVE FROM ");
-  canvas.print(reelProject(scene));
-  drawReelEventTitle(scene, 79, eyeColor);
-  canvas.fillRect(0, 174, SCREEN_WIDTH, 42, color);
-  drawCenteredText(scene.phase == ReelPhase::Attention
-                       ? "THREAD BLOCKED - PRESS TO REVIEW"
-                       : reelDetail(scene),
-                   187, 1, logoBackground);
-  FacePose reporter = reelPose(scene);
-  reporter.eyeScale = 0.42F;
-  reporter.pupilScale = 0.58F;
-  reporter.yOffset = 91.0F;
-  reporter.gazeX = -0.65F;
-  drawEye(276, reporter.leftEyeOpen, reporter);
-  drawEye(308, reporter.rightEyeOpen, reporter);
-  canvas.fillRect(0, 220, SCREEN_WIDTH, 20, logoBackground);
-  drawCenteredText("PUCK NEWS NETWORK", 226, 1, color);
+  canvas.fillRect(0, 228, SCREEN_WIDTH, 12, flame);
+  canvas.fillRect(0, 232, SCREEN_WIDTH, 8, hot);
 }
 
 // KNOCK — a solid notification barges in from the side and physically bumps
@@ -2817,118 +1885,6 @@ void drawDesignBeacon(const ReelScene& scene) {
   drawEye(182, cameo.rightEyeOpen, cameo);
 }
 
-// ELEVATOR — the notification car descends, pushing Puck toward the bottom.
-// A floor indicator makes the state hierarchy instantly legible.
-void drawDesignElevator(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += show * 120.0F;
-  pose.gazeY = mix(pose.gazeY, -0.82F, show);
-  drawFace(pose);
-  if (show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t y = std::lround(mix(-190.0F, 0.0F, show));
-  canvas.fillRect(0, y, SCREEN_WIDTH, 181, logoBackground);
-  canvas.fillRect(0, y + 177, SCREEN_WIDTH, 4, color);
-  canvas.fillRoundRect(12, y + 12, 43, 43, 7, color);
-  const char* floor = scene.phase == ReelPhase::Working
-                          ? "W"
-                          : scene.phase == ReelPhase::Message
-                                ? "M"
-                                : scene.phase == ReelPhase::Attention ? "!" : "OK";
-  const uint8_t floorSize = scene.phase == ReelPhase::Resolved ? 2 : 3;
-  canvas.setFont();
-  canvas.setTextSize(floorSize);
-  canvas.setTextColor(logoBackground);
-  canvas.setCursor(33 - std::strlen(floor) * floorSize * 3,
-                   y + (floorSize == 3 ? 22 : 26));
-  canvas.print(floor);
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(textureColor);
-  canvas.setCursor(69, y + 14);
-  canvas.print("NOW ARRIVING");
-  canvas.setTextSize(3);
-  canvas.setTextColor(color);
-  canvas.setCursor(69, y + 30);
-  canvas.print(reelEventHeadline(scene));
-  drawReelEventTitle(scene, y + 78, eyeColor);
-  drawCenteredText(scene.phase == ReelPhase::Attention ? "HOLD DOOR / PRESS"
-                                                        : reelDetail(scene),
-                   y + 144, 1, color);
-}
-
-// SPOTLIGHT — the face remains visible, but a moving cone finds Puck and a
-// compact headline drops over it. Attention trembles under the light.
-void drawDesignSpotlight(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.gazeX = std::sin(scene.phaseElapsed * 0.002F) * show;
-  pose.eyeScale += 0.1F * show;
-  drawFace(pose);
-  if (show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t sweep = std::lround(mix(-130.0F, 160.0F, show));
-  drawThickLine(sweep - 18, 0, 60, 240, color, 4);
-  drawThickLine(sweep + 18, 0, 260, 240, color, 4);
-  for (uint8_t glint = 0; glint < 5; ++glint) {
-    const int16_t y = 135 + glint * 19;
-    const int16_t x = 80 + ((scene.phaseElapsed / 7 + glint * 61) % 170);
-    canvas.fillCircle(x, y, 2 + (glint % 2), color);
-  }
-  canvas.fillRoundRect(12, 15, 296, 104, 12, logoBackground);
-  canvas.drawRoundRect(12, 15, 296, 104, 12, color);
-  if (show > 0.7F) {
-    drawCenteredText(reelEventHeadline(scene), 27, 4, color);
-    drawReelEventTitle(scene, 74, eyeColor);
-    drawCenteredText(scene.phase == ReelPhase::Attention ? "YOU'RE ON - PRESS"
-                                                          : reelDetail(scene),
-                     103, 1, color);
-  }
-}
-
-// FLIPBOARD — three oversized mechanical rows snap into the status, project,
-// and action. It is readable from across the room without losing Puck's eyes.
-void drawDesignFlipboard(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const uint16_t color = reelPhaseColor(scene);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, 190, logoBackground);
-  char title[27];
-  copyEllipsized(title, sizeof(title),
-                 scene.eventTitle[0] ? scene.eventTitle : reelProject(scene),
-                 24);
-  const char* rows[3] = {
-      reelEventHeadline(scene), title,
-      scene.phase == ReelPhase::Attention ? "PRESS NOW" : reelDetail(scene)};
-  for (uint8_t row = 0; row < 3; ++row) {
-    const float rowShow = smoothStep((scene.phaseElapsed - row * 130) / 350.0F) *
-                          show;
-    const int16_t height = std::lround(52.0F * rowShow);
-    const int16_t centerY = 31 + row * 58;
-    canvas.fillRoundRect(7, centerY - height / 2, 306, height, 5,
-                         row == 0 ? color : faceShadowColor);
-    if (rowShow > 0.68F) {
-      const uint8_t size = row == 0 ? 4 : row == 1 ? 2 : 1;
-      drawCenteredText(rows[row], centerY - (size == 4 ? 14 : size == 2 ? 8 : 4),
-                       size,
-                       row == 0 ? logoBackground : eyeColor);
-      canvas.drawFastHLine(13, centerY, 294,
-                           row == 0 ? logoBackground : logoHighlightColor);
-    }
-  }
-  drawWatchingEyes(scene, 151);
-}
-
 // PANIC — the intentionally excessive option. Puck's reaction is the hero;
 // giant words pin the face between them while attention makes it shiver.
 void drawDesignPanic(const ReelScene& scene) {
@@ -2950,9 +1906,22 @@ void drawDesignPanic(const ReelScene& scene) {
   const uint16_t color = reelPhaseColor(scene);
   const int16_t top = std::lround(mix(-58.0F, 0.0F, show));
   canvas.fillRect(0, top, SCREEN_WIDTH, 58, color);
-  drawCenteredText(reelEventHeadline(scene),
-                   top + (scene.phase == ReelPhase::Attention ? 16 : 11),
-                   reelHeadlineSize(scene), logoBackground);
+  const char* attentionTop = "ACTION";
+  const char* attentionBottom = "REQUIRED";
+  if (scene.phase == ReelPhase::Attention) {
+    const AmpThreadSummary* thread = reelAttentionThread(scene);
+    if (thread && std::strcmp(thread->state, "awaiting_approval") == 0) {
+      attentionTop = "APPROVAL";
+      attentionBottom = "NEEDED";
+    } else if (thread && std::strcmp(thread->state, "error") == 0) {
+      attentionTop = "ERROR";
+      attentionBottom = "DETECTED";
+    }
+    drawCenteredText(attentionTop, top + 11, 4, logoBackground);
+  } else {
+    drawCenteredText(reelEventHeadline(scene), top + 11,
+                     reelHeadlineSize(scene), logoBackground);
+  }
   if (scene.phase == ReelPhase::Message) {
     const int16_t panelY = 172 + std::lround(exit * 80.0F);
     canvas.fillRoundRect(14, panelY, 292, 68, 8, logoBackground);
@@ -2962,9 +1931,13 @@ void drawDesignPanic(const ReelScene& scene) {
   }
   const int16_t bottom = std::lround(mix(240.0F, 184.0F, show));
   canvas.fillRect(0, bottom, SCREEN_WIDTH, 56, color);
-  const uint8_t detailSize = std::strlen(reelDetail(scene)) <= 24 ? 2 : 1;
-  drawCenteredText(reelDetail(scene), bottom + (detailSize == 2 ? 13 : 18),
-                   detailSize, logoBackground);
+  if (scene.phase == ReelPhase::Attention) {
+    drawCenteredText(attentionBottom, bottom + 10, 4, logoBackground);
+  } else {
+    const uint8_t detailSize = std::strlen(reelDetail(scene)) <= 24 ? 2 : 1;
+    drawCenteredText(reelDetail(scene), bottom + (detailSize == 2 ? 13 : 18),
+                     detailSize, logoBackground);
+  }
   if ((show > 0.72F || exit > 0.0F) && scene.eventTitle[0]) {
     char title[37];
     copyEllipsized(title, sizeof(title), scene.eventTitle, 34);
@@ -2975,481 +1948,16 @@ void drawDesignPanic(const ReelScene& scene) {
   }
 }
 
-// Design 1 — WATCH: an editorial notification takeover. Puck is fully
-// present by default; important events temporarily sink the face until only
-// its watching eyes remain beneath one large, legible thread story.
-void drawDesignWatch(const ReelScene& scene) {
-  const float takeover = reelTakeoverVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 126.0F * takeover;
-  pose.gazeY = mix(pose.gazeY, -0.78F, takeover);
-  drawFace(pose);
-  if (takeover > 0.01F) {
-    drawTakeoverCopy(scene, takeover);
-  } else {
-    drawWatchShelf(scene);
-    if (scene.phase == ReelPhase::Attention) {
-      const int16_t edge = 2 + std::lround(scene.beat * 3.0F);
-      canvas.fillRect(0, 0, SCREEN_WIDTH, edge, accentColor);
-    }
-  }
-}
-
-void drawQueueRow(int16_t y, const char* state, const char* title,
-                  uint16_t color, bool highlighted) {
-  canvas.fillRoundRect(10, y, 300, 40, 5,
-                       highlighted ? faceShadowColor : logoBackground);
-  canvas.fillRect(10, y, 5, 40, color);
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(color);
-  canvas.setCursor(24, y + 6);
-  canvas.print(state);
-  char clipped[43];
-  copyEllipsized(clipped, sizeof(clipped), title, 40);
-  canvas.setTextColor(eyeColor);
-  canvas.setCursor(24, y + 23);
-  canvas.print(clipped);
-}
-
-uint8_t reelThreadPriority(const AmpThreadSummary& thread) {
-  if (stateNeedsAttention(thread.state)) {
-    return 4;
-  }
-  if (thread.unread) {
-    return 3;
-  }
-  if (stateIsWorking(thread.state)) {
-    return 2;
-  }
-  return 1;
-}
-
-void reelThreadStatus(const AmpThreadSummary& thread, char* status,
-                      size_t statusSize) {
-  if (stateNeedsAttention(thread.state)) {
-    threadStatusLabel(thread, status, statusSize);
-    return;
-  }
-  if (thread.unread) {
-    std::snprintf(status, statusSize, "%s", "NEW MESSAGE");
-    return;
-  }
-  threadStatusLabel(thread, status, statusSize);
-}
-
-uint16_t reelThreadColor(const AmpThreadSummary& thread) {
-  if (stateNeedsAttention(thread.state)) {
-    return accentColor;
-  }
-  if (thread.unread) {
-    return unreadColor;
-  }
-  if (stateIsWorking(thread.state)) {
-    return reelGreenColor();
-  }
-  return textureColor;
-}
-
-// Design 2 — QUEUE: the same watching-eyes transition opens a compact
-// priority queue instead of one headline, testing whether multiple active
-// threads can remain understandable during escalation.
-void drawDesignQueue(const ReelScene& scene) {
-  const float takeover = reelTakeoverVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 116.0F * takeover;
-  pose.gazeY = mix(pose.gazeY, -0.72F, takeover);
-  drawFace(pose);
-  if (takeover < 0.82F) {
-    const ReelStatus status = reelStatus(scene);
-    canvas.fillCircle(13, 18, 4, status.color);
-    canvas.setFont();
-    canvas.setTextSize(2);
-    canvas.setTextColor(status.color);
-    canvas.setCursor(25, 10);
-    canvas.print(status.text);
-    canvas.setTextSize(1);
-    canvas.setTextColor(eyeColor);
-    canvas.setCursor(25, 35);
-    if (scene.eventTitle[0]) {
-      char title[43];
-      copyEllipsized(title, sizeof(title), scene.eventTitle, 40);
-      canvas.print(title);
-    } else {
-      if (scene.phase == ReelPhase::Resolved) {
-        canvas.print("Queue cleared");
-      } else {
-        char monitored[24];
-        std::snprintf(monitored, sizeof(monitored), "%u thread%s monitored",
-                      scene.stats.total, scene.stats.total == 1 ? "" : "s");
-        canvas.print(monitored);
-      }
-    }
-    return;
-  }
-
-  canvas.fillRect(0, 0, SCREEN_WIDTH, 174, logoBackground);
-  const ReelStatus status = reelStatus(scene);
-  canvas.fillRect(0, 0, SCREEN_WIDTH, 3, status.color);
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(status.color);
-  canvas.setCursor(10, 8);
-  canvas.print(scene.phase == ReelPhase::Attention ? "PRIORITY QUEUE"
-                                                   : "THREAD QUEUE");
-  canvas.setTextSize(1);
-  canvas.setTextColor(textureColor);
-  char liveCount[12];
-  std::snprintf(liveCount, sizeof(liveCount), "%u LIVE",
-                scene.stats.threadCount);
-  canvas.setCursor(310 - std::strlen(liveCount) * 6, 14);
-  canvas.print(liveCount);
-
-  bool drawn[AMP_THREAD_SUMMARY_LIMIT] = {};
-  const uint8_t rowCount = std::min<uint8_t>(3, scene.stats.threadCount);
-  for (uint8_t row = 0; row < rowCount; ++row) {
-    int8_t best = -1;
-    for (uint8_t index = 0; index < scene.stats.threadCount; ++index) {
-      if (!drawn[index] &&
-          (best < 0 || reelThreadPriority(scene.stats.threads[index]) >
-                           reelThreadPriority(scene.stats.threads[best]))) {
-        best = index;
-      }
-    }
-    if (best < 0) {
-      break;
-    }
-    drawn[best] = true;
-    const AmpThreadSummary& thread = scene.stats.threads[best];
-    char status[32];
-    reelThreadStatus(thread, status, sizeof(status));
-    drawQueueRow(34 + row * 44, status, thread.title, reelThreadColor(thread),
-                 row == 0);
-  }
-}
-
-void drawDesignSidebar(const ReelScene& scene) {
-  FacePose pose = reelPose(scene);
-  pose.xOffset = -54.0F;
-  drawFace(pose);
-
-  constexpr int16_t panelX = 212;
-  canvas.fillRect(panelX, 0, SCREEN_WIDTH - panelX, SCREEN_HEIGHT,
-                  logoBackground);
-  canvas.drawFastVLine(panelX, 0, SCREEN_HEIGHT, logoHighlightColor);
-  canvas.drawFastVLine(panelX + 2, 0, SCREEN_HEIGHT, faceShadowColor);
-
-  struct Row {
-    uint16_t count;
-    const char* label;
-    uint16_t color;
-  };
-  const Row rows[4] = {
-      {scene.stats.needsAttention, "NEED YOU", accentColor},
-      {scene.stats.unread, "NEW MSGS", unreadColor},
-      {scene.stats.working, "WORKING", reelGreenColor()},
-      {scene.stats.idle, "IDLE", eyeColor},
-  };
-  int8_t activeRow = -1;
-  if (scene.phase == ReelPhase::Attention) {
-    activeRow = 0;
-  } else if (scene.phase == ReelPhase::Message) {
-    activeRow = 1;
-  } else if (scene.phase == ReelPhase::Working) {
-    activeRow = 2;
-  }
-  for (uint8_t row = 0; row < 4; ++row) {
-    const int16_t y = 8 + row * 58;
-    const bool active = rows[row].count > 0;
-    const bool highlighted = row == activeRow;
-    if (highlighted) {
-      canvas.fillRoundRect(panelX + 4, y, 102, 52, 6, rows[row].color);
-    } else {
-      canvas.fillRect(panelX + 4, y + 2, 4, 48,
-                      active ? rows[row].color : logoHighlightColor);
-    }
-    const uint16_t numberColor =
-        highlighted ? logoBackground
-                    : (active ? rows[row].color : logoHighlightColor);
-    const uint16_t labelColor =
-        highlighted ? logoBackground
-                    : (active ? eyeColor : logoHighlightColor);
-    char count[8];
-    std::snprintf(count, sizeof(count), "%u", rows[row].count);
-    canvas.setFont();
-    canvas.setTextSize(3);
-    canvas.setTextColor(numberColor);
-    canvas.setCursor(panelX + 17, y + 2);
-    canvas.print(count);
-    canvas.setTextSize(1);
-    canvas.setTextColor(labelColor);
-    canvas.setCursor(panelX + 17, y + 36);
-    canvas.print(rows[row].label);
-  }
-}
-
-void drawDesignComic(const ReelScene& scene) {
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 12.0F;
-  drawFace(pose);
-  if (scene.intro < 0.15F) {
-    return;
-  }
-
-  const bool urgent = scene.phase == ReelPhase::Attention;
-  const uint16_t paper = display.color565(239, 236, 203);
-  const uint16_t ink = display.color565(35, 37, 25);
-  const uint16_t bubbleColor = urgent ? accentColor : paper;
-  const int16_t y = std::lround(mix(-22.0F, 8.0F, scene.intro));
-  canvas.fillRoundRect(20, y, 280, 62, 12, bubbleColor);
-  canvas.fillTriangle(145, y + 60, 175, y + 60, 160, y + 84,
-                      bubbleColor);
-  const char* speech = "All quiet out there.";
-  if (scene.phase == ReelPhase::Working) speech = "On it! 2 running.";
-  if (scene.phase == ReelPhase::Message) speech = "You've got mail!";
-  if (scene.phase == ReelPhase::Attention) speech = "Hey! Need you here!";
-  if (scene.phase == ReelPhase::Resolved) speech = "All wrapped up!";
-  drawCenteredText(speech, y + 11, 2, ink);
-  char detail[43];
-  if (scene.eventTitle[0]) {
-    copyEllipsized(detail, sizeof(detail), scene.eventTitle, 40);
-  } else {
-    std::snprintf(detail, sizeof(detail), "%u threads resting",
-                  scene.stats.total);
-  }
-  drawCenteredText(detail, y + 40, 1, urgent ? ink : pupilColor);
-}
-
 float reelCardSettle(uint32_t elapsed) {
   const float t = elapsed;
   return 1.0F - std::exp(-t * 0.0065F) * std::cos(t * 0.013F);
 }
 
-// Design 5 — CARDS: notifications now behave as one physical stack. Each new
-// sheet drops from above, pushes older sheets down, and progressively lowers
-// Puck; all sheets leave together before the face springs back.
-void drawDesignCards(const ReelScene& scene) {
-  struct Card {
-    const char* label;
-    const char* title;
-    uint16_t color;
-  };
-  Card cards[3] = {};
-  char workingLabel[24];
-  char messageLabel[24];
-  char attentionLabel[24];
-  std::snprintf(workingLabel, sizeof(workingLabel), "%u THREAD%s ACTIVE",
-                scene.stats.working, scene.stats.working == 1 ? "" : "S");
-  std::snprintf(messageLabel, sizeof(messageLabel), "%u NEW MESSAGE%s",
-                scene.stats.unread, scene.stats.unread == 1 ? "" : "S");
-  std::snprintf(attentionLabel, sizeof(attentionLabel), "%u NEED YOU",
-                scene.stats.needsAttention);
-  uint8_t cardCount = 0;
-  const auto addCard = [&](const char* label, ReelPhase phase,
-                           uint16_t color) {
-    const AmpThreadSummary* thread =
-        reelThreadForPhase(scene.stats, phase);
-    cards[cardCount++] = {
-        label,
-        thread ? thread->title
-               : (scene.eventTitle[0] ? scene.eventTitle : "Amp thread"),
-        color,
-    };
-  };
-  if (scene.stats.working > 0) {
-    addCard(workingLabel, ReelPhase::Working, reelGreenColor());
-  }
-  if (scene.stats.unread > 0 && cardCount < 3) {
-    addCard(messageLabel, ReelPhase::Message, unreadColor);
-  }
-  if (scene.stats.needsAttention > 0 && cardCount < 3) {
-    addCard(attentionLabel, ReelPhase::Attention, accentColor);
-  }
-  if (scene.phase == ReelPhase::Resolved && DESIGN_REEL_SCRIPTED) {
-    cardCount = 0;
-    cards[cardCount++] = {"THREAD ACTIVE", scene.stats.threads[0].title,
-                          reelGreenColor()};
-    cards[cardCount++] = {"NEW MESSAGE", scene.stats.threads[0].title,
-                          unreadColor};
-    cards[cardCount++] = {"NEEDS YOU", scene.stats.threads[1].title,
-                          accentColor};
-  }
-  const uint8_t previousCount =
-      scene.phase == ReelPhase::Resolved
-          ? cardCount
-          : (cardCount > 0 ? cardCount - 1 : 0);
-
-  const float settle = reelCardSettle(scene.phaseElapsed);
-  const float dismiss = scene.phase == ReelPhase::Resolved
-                            ? smoothStep(scene.phaseElapsed / 850.0F)
-                            : 0.0F;
-  float depth = 0.0F;
-  if (scene.phase == ReelPhase::Resolved && DESIGN_REEL_SCRIPTED) {
-    depth = 3.0F * (1.0F - dismiss);
-  } else if (cardCount > 0) {
-    depth = previousCount + settle;
-  }
-
-  FacePose pose = reelPose(scene);
-  pose.yOffset += depth * 38.0F;
-  pose.gazeY = mix(pose.gazeY, -0.72F, clamp01(depth / 3.0F));
-  drawFace(pose);
-
-  for (uint8_t i = 0; i < cardCount; ++i) {
-    const bool entering = i == cardCount - 1 && cardCount > previousCount;
-    const int16_t oldSlot = previousCount > i ? previousCount - 1 - i : 0;
-    const int16_t newSlot = cardCount - 1 - i;
-    const float slot = entering ? 0.0F : mix(oldSlot, newSlot, settle);
-    const int16_t settledY = 8 + std::lround(slot * 14.0F);
-    const int16_t y = entering
-                          ? std::lround(mix(-90.0F, settledY, settle))
-                          : settledY;
-    const int16_t x = std::lround(dismiss * (360.0F + i * 22.0F));
-    canvas.fillRoundRect(x + 13, y + 4, 294, 82, 8, logoBackground);
-    canvas.fillRoundRect(x + 10, y, 294, 82, 8, faceShadowColor);
-    canvas.fillRect(x + 10, y, 6, 82, cards[i].color);
-    canvas.setFont();
-    canvas.setTextSize(2);
-    canvas.setTextColor(cards[i].color);
-    canvas.setCursor(x + 26, y + 10);
-    canvas.print(cards[i].label);
-    char firstLine[25];
-    char secondLine[25];
-    splitTitle(cards[i].title, firstLine, secondLine);
-    canvas.setTextSize(1);
-    canvas.setTextColor(eyeColor);
-    canvas.setCursor(x + 26, y + 39);
-    canvas.print(firstLine);
-    if (secondLine[0]) {
-      canvas.setCursor(x + 26, y + 55);
-      canvas.print(secondLine);
-    }
-  }
-  if (scene.phase == ReelPhase::Idle) {
-    canvas.drawFastVLine(160, 198, 34, logoHighlightColor);
-    const auto drawCount = [&](int16_t centerX, uint16_t value,
-                               const char* label, uint16_t color) {
-      char count[8];
-      std::snprintf(count, sizeof(count), "%u", value);
-      canvas.setFont();
-      canvas.setTextSize(2);
-      canvas.setTextColor(value ? color : textureColor);
-      canvas.setCursor(centerX - std::strlen(count) * 6, 199);
-      canvas.print(count);
-      canvas.setTextSize(1);
-      canvas.setCursor(centerX - std::strlen(label) * 3, 222);
-      canvas.print(label);
-    };
-    drawCount(80, scene.stats.working, "WORKING", reelGreenColor());
-    drawCount(240, scene.stats.unread, "NEW MESSAGES", unreadColor);
-  } else if (scene.phase == ReelPhase::Resolved && dismiss > 0.72F) {
-    const uint16_t green = reelGreenColor();
-    canvas.fillCircle(160, 23, 13, green);
-    drawThickLine(153, 23, 158, 28, logoBackground, 3);
-    drawThickLine(158, 28, 168, 17, logoBackground, 3);
-    drawCenteredText("STACK CLEARED", 45, 1, green);
-  }
-}
-
-// Design 6 — FORECAST: weather-like motion appears only when it carries
-// state. Directional green current means work, blue rain means a message, and
-// amber lightning means action; explicit thread copy stays in the foreground.
 uint32_t reelHash(uint32_t value) {
   value ^= value >> 16;
   value *= 2654435761U;
   value ^= value >> 13;
   return value;
-}
-
-void drawDesignForecast(const ReelScene& scene, uint32_t elapsed) {
-  const float takeover = reelTakeoverVisibility(scene);
-  FacePose pose = reelPose(scene);
-  pose.yOffset += 120.0F * takeover;
-  pose.gazeY = mix(pose.gazeY, -0.76F, takeover);
-  drawFace(pose);
-
-  const uint16_t green = reelGreenColor();
-  switch (scene.phase) {
-    case ReelPhase::Idle:
-      break;
-    case ReelPhase::Working:
-      for (uint8_t i = 0; i < 9; ++i) {
-        const uint32_t h = reelHash(i + 40);
-        const float progress = (((elapsed / 7) + (h % 500)) % 500) / 500.0F;
-        const int16_t x = -20 + std::lround(progress * 380.0F);
-        const int16_t y = 18 + ((h >> 9) % 158);
-        canvas.drawLine(x, y, x + 11, y - 5, green);
-      }
-      break;
-    case ReelPhase::Message:
-      for (uint8_t i = 0; i < 12; ++i) {
-        const uint32_t h = reelHash(i + 80);
-        const float fall = (((elapsed / 4) + (h % 500)) % 500) / 500.0F;
-        canvas.drawFastVLine(h % 314, std::lround(fall * 235.0F) - 10, 7,
-                             unreadColor);
-      }
-      break;
-    case ReelPhase::Attention: {
-      const uint16_t hot = display.color565(255, 194, 67);
-      for (uint8_t i = 0; i < 7; ++i) {
-        const uint32_t h = reelHash(i + 120);
-        const int16_t x = 8 + (h % 300);
-        const int16_t y = 10 + ((h >> 8) % 205);
-        const int16_t kick = std::lround(scene.beat * 6.0F);
-        canvas.drawLine(x, y, x + 7 + kick, y + 5,
-                        i % 2 ? accentColor : hot);
-        canvas.drawLine(x + 7 + kick, y + 5, x + 3, y + 11,
-                        i % 2 ? accentColor : hot);
-      }
-      break;
-    }
-    case ReelPhase::Resolved:
-      break;
-  }
-
-  if (takeover >= 0.82F) {
-    const ReelStatus status = reelStatus(scene);
-    canvas.fillRoundRect(18, 15, 284, 142, 10, logoBackground);
-    canvas.drawRoundRect(18, 15, 284, 142, 10, status.color);
-    drawCenteredText(status.text, 28, 2, status.color);
-    char firstLine[25];
-    char secondLine[25];
-    splitTitle(scene.eventTitle, firstLine, secondLine);
-    drawCenteredText(firstLine, 66, 2, eyeColor);
-    if (secondLine[0]) {
-      drawCenteredText(secondLine, 88, 2, eyeColor);
-    }
-    drawCenteredText(reelDetail(scene), 124, 1, eyeColor);
-  } else {
-    const ReelStatus status = reelStatus(scene);
-    char forecast[28];
-    if (scene.phase == ReelPhase::Working) {
-      std::snprintf(forecast, sizeof(forecast), "CURRENT - %u WORKING",
-                    scene.stats.working);
-    } else if (scene.phase == ReelPhase::Message) {
-      std::snprintf(forecast, sizeof(forecast), "RAIN - %u NEW MESSAGE%s",
-                    scene.stats.unread, scene.stats.unread == 1 ? "" : "S");
-    } else if (scene.phase == ReelPhase::Attention) {
-      std::snprintf(forecast, sizeof(forecast), "STORM - %u NEED YOU",
-                    scene.stats.needsAttention);
-    } else if (scene.phase == ReelPhase::Resolved) {
-      std::snprintf(forecast, sizeof(forecast), "%s", "SKIES CLEAR");
-    } else {
-      std::snprintf(forecast, sizeof(forecast), "CALM - %u IDLE",
-                    scene.stats.idle);
-    }
-    drawCenteredText(forecast, 207, 2, status.color);
-    if (scene.eventTitle[0]) {
-      char title[43];
-      copyEllipsized(title, sizeof(title), scene.eventTitle, 40);
-      drawCenteredText(title, 230, 1, eyeColor);
-    } else {
-      drawCenteredText(scene.phase == ReelPhase::Resolved
-                           ? "Nothing needs you"
-                           : "No active weather",
-                       230, 1, textureColor);
-    }
-  }
 }
 
 void drawReelOverlay(uint32_t now) {
@@ -3510,6 +2018,11 @@ void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
                               ? reelScene(debugFaceElapsed(now))
                               : (scripted ? reelScene(reelElapsed)
                                           : liveReelScene(now));
+  if (scene.phase == ReelPhase::Shipped) {
+    drawShippedLiftoff(scene.phaseElapsed, scene.eventTitle);
+    pushCanvas();
+    return;
+  }
   if (!scripted &&
       (!scene.stats.available || scene.stats.total == 0)) {
     drawFace(reelPose(scene));
@@ -3538,7 +2051,6 @@ void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
   drawReelOverlay(now);
   pushCanvas();
 }
-// ================== END DESIGN REEL drawing ================================
 
 void drawEncoderFeedback() {
   if (!encoderFeedbackActive ||
@@ -3576,27 +2088,6 @@ void pushCanvas() {
   display.setAddrWindow(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
   display.writePixels(canvas.getBuffer(), SCREEN_PIXEL_COUNT);
   display.endWrite();
-}
-
-void drawDemoFrame(uint32_t elapsed) {
-  uint32_t sceneTime = elapsed % DEMO_DURATION_MS;
-  if (sceneTime < WAKE_DURATION_MS) {
-    drawWake(sceneTime);
-  } else if ((sceneTime -= WAKE_DURATION_MS) < IDLE_DURATION_MS) {
-    drawIdle(sceneTime);
-  } else if ((sceneTime -= IDLE_DURATION_MS) < BEWILDERED_DURATION_MS) {
-    drawBewildered(sceneTime);
-  } else if ((sceneTime -= BEWILDERED_DURATION_MS) < THINKING_DURATION_MS) {
-    drawThinking(sceneTime);
-  } else if ((sceneTime -= THINKING_DURATION_MS) <
-             QUIET_SURPRISE_DURATION_MS) {
-    drawQuietSurprise(sceneTime);
-  } else {
-    sceneTime -= QUIET_SURPRISE_DURATION_MS;
-    drawWorked(sceneTime);
-  }
-  drawStatsPanel(getAmpStats());
-  pushCanvas();
 }
 
 void printWiring() {
@@ -3694,15 +2185,22 @@ void setup() {
   }
 
   demoStartedAt = millis();
-  beginAmpStats();
-  drawDemoFrame(0);
+  drawLogo(0);
+  pushCanvas();
   lastFrameAt = millis();
 }
 
 void loop() {
   const uint32_t now = millis();
   updateControls(now);
-  updateAmpStats(now);
+  if (!ampStatsStarted && now - demoStartedAt >= STARTUP_LOGO_DURATION_MS) {
+    beginAmpStats();
+    ampStatsStarted = true;
+    wifiConnectionStartedAt = now;
+  }
+  if (ampStatsStarted) {
+    updateAmpStats(now);
+  }
   updateNotifications(now);
   if (now - lastFrameAt < FRAME_INTERVAL_MS) {
     return;
@@ -3710,30 +2208,30 @@ void loop() {
 
   lastFrameAt = now;
   const AmpStatsSnapshot stats = getAmpStats();
-  if (initialSetupCompletedAt == 0 && stats.initialAttemptComplete) {
+  const bool connectingFaceComplete =
+      ampStatsStarted &&
+      now - wifiConnectionStartedAt >= CONNECTING_FACE_MIN_DURATION_MS &&
+      (!stats.configured || stats.wifiConnected || stats.initialAttemptComplete);
+  if (initialSetupCompletedAt == 0 && connectingFaceComplete) {
     initialSetupCompletedAt = now;
   }
-  if (initialSetupCompletedAt == 0 ||
-      now - initialSetupCompletedAt < LOGO_HOLD_AFTER_SETUP_MS) {
+  if (!ampStatsStarted) {
     drawLogo(now - demoStartedAt);
     pushCanvas();
     return;
   }
-
-  const uint32_t mainElapsed = now - initialSetupCompletedAt -
-                               LOGO_HOLD_AFTER_SETUP_MS;
-  const uint32_t notificationElapsed = now - notificationStartedAt;
-  if (uiPage == UiPage::Face && !DESIGN_REEL_ENABLED &&
-      notificationKind != NotificationKind::None &&
-      notificationElapsed < NOTIFICATION_DURATION_MS) {
-    if (notificationKind == NotificationKind::Attention) {
-      drawAttentionPulse(notificationElapsed);
-    } else {
-      drawStatusNotification(notificationElapsed, notificationKind,
-                             notificationThreadTitle, getAmpStats());
-    }
+  if (initialSetupCompletedAt == 0) {
+    AmpStatsSnapshot connectingStats = stats;
+    connectingStats.configured = true;
+    connectingStats.wifiConnected = false;
+    drawFace(neutralPose());
+    drawStatsPanel(connectingStats);
     pushCanvas();
-  } else if (uiPage == UiPage::MainMenu) {
+    return;
+  }
+
+  const uint32_t mainElapsed = now - initialSetupCompletedAt;
+  if (uiPage == UiPage::MainMenu) {
     drawMainMenu();
     pushCanvas();
   } else if (uiPage == UiPage::Settings) {
@@ -3746,12 +2244,6 @@ void loop() {
     drawThreadOverview();
     pushCanvas();
   } else {
-    if (DESIGN_REEL_ENABLED) {
-      // DESIGN REEL: temporary replacement for the normal face screen.
-      drawDesignReelFrame(mainElapsed, now);
-    } else {
-      notificationKind = NotificationKind::None;
-      drawDemoFrame(mainElapsed);
-    }
+    drawDesignReelFrame(mainElapsed, now);
   }
 }
