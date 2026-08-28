@@ -7,6 +7,10 @@
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | <img src="docs/pocketpuck.jpg" alt="An image of the PocketPuck device" width="400" /> | A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state and lets you know if you need to take action. It's also very cute. |
 
+Full video demo:
+
+<video controls src="https://github.com/user-attachments/assets/eebd0190-7875-4f72-867d-91fb097cefb3" />
+
 ## Hardware
 
 - Arduino Nano ESP32 (any ESP32 will work, but you might have to change pinout assignments)
