@@ -61,6 +61,7 @@ constexpr bool DESIGN_REEL_SCRIPTED = false;
 constexpr uint8_t REEL_VERSION = 5;
 constexpr uint8_t REEL_MODE_COUNT = 4;
 constexpr uint8_t FONT_COUNT = 8;
+constexpr uint8_t DEBUG_FACE_PHASE_COUNT = 5;
 constexpr uint32_t REEL_OVERLAY_MS = 1800;
 const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
     "MINIMAL", "KNOCK", "BEACON", "PANIC",
@@ -68,6 +69,9 @@ const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
 const char* const FONT_NAMES[FONT_COUNT] = {
     "CLASSIC",    "PLEX",     "CHAKRA",  "TERMINAL",
     "SHARE TECH", "AUDIOWIDE", "RAJDHANI", "QUANTICO",
+};
+const char* const DEBUG_FACE_PHASE_NAMES[DEBUG_FACE_PHASE_COUNT] = {
+    "IDLE", "WORKING", "MESSAGE", "ATTENTION", "ALL CLEAR",
 };
 // ================== END DESIGN REEL constants =============================
 
@@ -139,6 +143,8 @@ uint8_t mainMenuIndex = 0;
 uint8_t settingsMenuIndex = 0;
 bool blinkingDisabled = false;
 uint32_t settingsResetAt = 0;
+bool debugFaceActive = false;
+uint8_t debugFacePhase = 0;
 uint8_t selectedThreadIndex = 0;
 AmpThreadSummary detailThread;
 bool detailUnreadAvailable = false;
@@ -209,6 +215,7 @@ void adjustBacklight(int8_t direction) {
 
 void showFace() {
   uiPage = UiPage::Face;
+  debugFaceActive = false;
   reelModeSelecting = false;
   fontSelecting = false;
   encoderFeedbackActive = false;
@@ -225,6 +232,7 @@ void showMainMenu(uint32_t now) {
     fontSelecting = false;
   }
   uiPage = UiPage::MainMenu;
+  debugFaceActive = false;
   mainMenuIndex = 0;
   lastBrowserInteractionAt = now;
   encoderFeedbackActive = false;
@@ -233,6 +241,7 @@ void showMainMenu(uint32_t now) {
 
 void showSettings(uint32_t now) {
   uiPage = UiPage::Settings;
+  debugFaceActive = false;
   settingsMenuIndex = 0;
   lastBrowserInteractionAt = now;
   encoderFeedbackActive = false;
@@ -241,6 +250,7 @@ void showSettings(uint32_t now) {
 
 void showFacePicker(uint32_t now) {
   uiPage = UiPage::Face;
+  debugFaceActive = false;
   reelModeBeforeSelection = reelMode;
   reelModeSelecting = true;
   reelModeChangedAt = now;
@@ -251,12 +261,23 @@ void showFacePicker(uint32_t now) {
 
 void showFontPicker(uint32_t now) {
   uiPage = UiPage::Face;
+  debugFaceActive = false;
   fontBeforeSelection = selectedFont;
   fontSelecting = true;
   reelModeChangedAt = now;
   reelSelectionStartedAt = now;
   encoderFeedbackActive = false;
   Serial.println("Font picker: turn to preview, click to confirm");
+}
+
+void showDebugFace(uint32_t now) {
+  uiPage = UiPage::Face;
+  debugFaceActive = true;
+  debugFacePhase = 0;
+  lastBrowserInteractionAt = now;
+  encoderFeedbackActive = false;
+  Serial.printf("Debug face: %s; turn to change state, press to return\n",
+                DEBUG_FACE_PHASE_NAMES[debugFacePhase]);
 }
 
 void showThreadList(uint32_t now) {
@@ -331,13 +352,17 @@ void resetSettings(uint32_t now) {
   reelMode = 0;
   selectedFont = 0;
   blinkingDisabled = false;
+  debugFaceActive = false;
+  debugFacePhase = 0;
   reelModeChangedAt = now;
   settingsResetAt = now;
   Serial.println("Settings reset to defaults");
 }
 
 void handleShortPress(uint32_t now) {
-  if (uiPage == UiPage::Face && reelModeSelecting) {
+  if (uiPage == UiPage::Face && debugFaceActive) {
+    showSettings(now);
+  } else if (uiPage == UiPage::Face && reelModeSelecting) {
     reelModeSelecting = false;
     reelModeChangedAt = now;
     saveSelectedFace();
@@ -363,6 +388,8 @@ void handleShortPress(uint32_t now) {
       blinkingDisabled = !blinkingDisabled;
       saveBlinkingPreference();
       Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
+    } else if (settingsMenuIndex == 1) {
+      showDebugFace(now);
     } else {
       resetSettings(now);
     }
@@ -390,7 +417,7 @@ void updateControls(uint32_t now) {
       const int16_t next =
           static_cast<int16_t>(settingsMenuIndex) + encoderSteps;
       settingsMenuIndex = static_cast<uint8_t>(
-          std::max<int16_t>(0, std::min<int16_t>(1, next)));
+          std::max<int16_t>(0, std::min<int16_t>(2, next)));
       lastBrowserInteractionAt = now;
     } else if (uiPage == UiPage::ThreadList) {
       navigateThreads(encoderSteps, now, false);
@@ -412,6 +439,14 @@ void updateControls(uint32_t now) {
       reelModeChangedAt = now;
       Serial.printf("Font preview: %u/%u %s\n", selectedFont + 1,
                     FONT_COUNT, FONT_NAMES[selectedFont]);
+    } else if (debugFaceActive) {
+      const int16_t next =
+          (static_cast<int16_t>(debugFacePhase) + encoderSteps) %
+          DEBUG_FACE_PHASE_COUNT;
+      debugFacePhase = static_cast<uint8_t>(
+          (next + DEBUG_FACE_PHASE_COUNT) % DEBUG_FACE_PHASE_COUNT);
+      Serial.printf("Debug face: %s\n",
+                    DEBUG_FACE_PHASE_NAMES[debugFacePhase]);
     } else {
       lastEncoderDirection = encoderSteps > 0 ? 1 : -1;
       for (int8_t step = 0; step < std::abs(encoderSteps); ++step) {
@@ -781,7 +816,19 @@ void setSelectedFont(uint8_t size) {
   canvas.setTextSize(std::max<uint8_t>(1, (size + 1) / 2));
 }
 
-void drawCenteredText(const char* text, int16_t y, uint8_t size,
+uint16_t selectedTextWidth(const char* text, uint8_t size) {
+  setSelectedFont(size);
+  int16_t x1;
+  int16_t y1;
+  uint16_t width;
+  uint16_t height;
+  canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
+  canvas.setFont();
+  canvas.setTextSize(1);
+  return width;
+}
+
+void drawSelectedText(const char* text, int16_t x, int16_t y, uint8_t size,
                       uint16_t color) {
   setSelectedFont(size);
   canvas.setTextColor(color);
@@ -790,11 +837,17 @@ void drawCenteredText(const char* text, int16_t y, uint8_t size,
   uint16_t width;
   uint16_t height;
   canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
-  canvas.setCursor((SCREEN_WIDTH - static_cast<int16_t>(width)) / 2 - x1,
-                   y - y1);
+  canvas.setCursor(x - x1, y - y1);
   canvas.print(text);
   canvas.setFont();
   canvas.setTextSize(1);
+}
+
+void drawCenteredText(const char* text, int16_t y, uint8_t size,
+                      uint16_t color) {
+  const uint16_t width = selectedTextWidth(text, size);
+  drawSelectedText(text, (SCREEN_WIDTH - static_cast<int16_t>(width)) / 2, y,
+                   size, color);
 }
 
 void drawMenuRow(const char* label, const char* value, int16_t y,
@@ -832,14 +885,16 @@ void drawSettings(uint32_t now) {
   canvas.fillScreen(logoBackground);
   drawCenteredText("SETTINGS", 12, 2, eyeColor);
   canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
-  drawMenuRow("DISABLE BLINKING", nullptr, 59, settingsMenuIndex == 0);
-  canvas.drawRect(278, 74, 18, 18,
+  drawMenuRow("DISABLE BLINKING", nullptr, 47, settingsMenuIndex == 0);
+  canvas.drawRect(278, 62, 18, 18,
                   blinkingDisabled ? logoHighlightColor : eyeColor);
   if (blinkingDisabled) {
-    drawThickLine(281, 82, 286, 88, logoHighlightColor, 3);
-    drawThickLine(286, 88, 294, 77, logoHighlightColor, 3);
+    drawThickLine(281, 70, 286, 76, logoHighlightColor, 3);
+    drawThickLine(286, 76, 294, 65, logoHighlightColor, 3);
   }
-  drawMenuRow("RESET SETTINGS", nullptr, 119, settingsMenuIndex == 1);
+  drawMenuRow("DEBUG FACE", "PRESS TO START", 103,
+              settingsMenuIndex == 1);
+  drawMenuRow("RESET SETTINGS", nullptr, 159, settingsMenuIndex == 2);
   if (settingsResetAt != 0 && now - settingsResetAt < REEL_OVERLAY_MS) {
     drawCenteredText("SETTINGS RESET", 185, 1, logoHighlightColor);
   }
@@ -1423,6 +1478,22 @@ ReelScene reelScene(uint32_t elapsed) {
       break;
   }
   return scene;
+}
+
+uint32_t debugFaceElapsed() {
+  switch (debugFacePhase) {
+    case 0:
+      return 1000;
+    case 1:
+      return REEL_IDLE_MS + 1000;
+    case 2:
+      return REEL_IDLE_MS + REEL_WORKING_MS + 1000;
+    case 3:
+      return REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS + 1000;
+    default:
+      return REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS +
+             REEL_ATTENTION_MS + 1000;
+  }
 }
 
 const AmpThreadSummary* reelThreadForPhase(const AmpStatsSnapshot& stats,
@@ -2124,14 +2195,10 @@ void drawDesignGauge(const ReelScene& scene, uint32_t elapsed) {
 void drawDesignMinimal(const ReelScene& scene) {
   drawFace(reelPose(scene));
   const ReelStatus status = reelStatus(scene);
-  const int16_t groupWidth = std::strlen(status.text) * 12 + 18;
+  const int16_t groupWidth = selectedTextWidth(status.text, 2) + 18;
   const int16_t x = (SCREEN_WIDTH - groupWidth) / 2;
   canvas.fillCircle(x + 5, 228, 5, status.color);
-  canvas.setFont();
-  canvas.setTextSize(2);
-  canvas.setTextColor(status.color);
-  canvas.setCursor(x + 18, 220);
-  canvas.print(status.text);
+  drawSelectedText(status.text, x + 18, 220, 2, status.color);
   if (scene.phase == ReelPhase::Attention) {
     const int16_t edge = 3 + std::lround(scene.beat * 5.0F);
     canvas.fillRect(0, 0, SCREEN_WIDTH, edge, accentColor);
@@ -2643,13 +2710,11 @@ void drawDesignKnock(const ReelScene& scene) {
   canvas.setTextColor(logoBackground);
   canvas.setCursor(x + 35, 38);
   canvas.print(reelProject(scene));
-  canvas.setTextSize(2);
-  canvas.setCursor(x + 35, 63);
-  canvas.print(reelEventHeadline(scene));
+  drawSelectedText(reelEventHeadline(scene), x + 35, 63, 2,
+                   logoBackground);
   char firstLine[25];
   char secondLine[25];
   splitTitle(scene.eventTitle, firstLine, secondLine);
-  canvas.setTextSize(1);
   canvas.setCursor(x + 35, 103);
   canvas.print(firstLine);
   if (secondLine[0]) {
@@ -3356,6 +3421,20 @@ void drawDesignForecast(const ReelScene& scene, uint32_t elapsed) {
 }
 
 void drawReelOverlay(uint32_t now) {
+  if (debugFaceActive) {
+    char label[32];
+    std::snprintf(label, sizeof(label), "DEBUG FACE: %s",
+                  DEBUG_FACE_PHASE_NAMES[debugFacePhase]);
+    const int16_t width = std::strlen(label) * 6 + 12;
+    canvas.fillRoundRect(4, 3, width, 18, 5, logoBackground);
+    canvas.drawRoundRect(4, 3, width, 18, 5, textureColor);
+    canvas.setFont();
+    canvas.setTextSize(1);
+    canvas.setTextColor(eyeColor);
+    canvas.setCursor(10, 8);
+    canvas.print(label);
+    return;
+  }
   if (now - reelModeChangedAt >= REEL_OVERLAY_MS) {
     return;
   }
@@ -3395,8 +3474,10 @@ void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
                                           : elapsed;
   const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting ||
                         fontSelecting;
-  const ReelScene scene = scripted ? reelScene(reelElapsed)
-                                   : liveReelScene(now);
+  const ReelScene scene = debugFaceActive
+                              ? reelScene(debugFaceElapsed())
+                              : (scripted ? reelScene(reelElapsed)
+                                          : liveReelScene(now));
   if (!scripted &&
       (!scene.stats.available || scene.stats.total == 0)) {
     drawFace(reelPose(scene));

@@ -59,9 +59,11 @@ persists across reboots. **Select Font** similarly previews and persists
 Classic, IBM Plex Mono, Chakra Petch, and VT323 treatments for the prominent
 display copy, plus Share Tech Mono, Audiowide, Rajdhani, and Quantico. Compact
 labels retain the pixel font so dense screens remain readable. The **Settings**
-submenu
-can disable Puck's blinking or reset all settings, including the selected face
-and font, to their defaults. Outside the picker, the selected design uses live
+submenu can disable Puck's blinking, open **Debug Face**, or reset all settings,
+including the selected face and font, to their defaults. Debug Face holds the
+currently selected face on a dial-selected fixture state—Idle, Working, Message,
+Attention, or All Clear—rather than advancing on the normal timer; press the
+dial to return to Settings. Outside the picker, the selected design uses live
 Amp data. Working remains ambient, new
 messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.
