@@ -11,13 +11,7 @@
 #include "amp_stats.h"
 #include "amp_logo.h"
 #include "display_config.h"
-#include "fonts/Audiowide9pt7b.h"
-#include "fonts/ChakraPetch9pt7b.h"
 #include "fonts/PlexMono9pt7b.h"
-#include "fonts/Quantico9pt7b.h"
-#include "fonts/Rajdhani9pt7b.h"
-#include "fonts/ShareTechMono9pt7b.h"
-#include "fonts/VT3239pt7b.h"
 
 namespace {
 
@@ -27,6 +21,7 @@ constexpr int16_t SCREEN_WIDTH = 320;
 constexpr int16_t SCREEN_HEIGHT = 240;
 constexpr size_t SCREEN_PIXEL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT;
 constexpr uint32_t FRAME_INTERVAL_MS = 80;
+constexpr float IRIS_SMOOTHING_TIME_MS = 180.0F;
 constexpr uint8_t DEPTH_LAYER_COUNT = 8;
 constexpr float FULL_ROTATION_RADIANS = 6.283185307F;
 constexpr int16_t FACE_Y_OFFSET = 12;
@@ -37,10 +32,13 @@ constexpr uint32_t ENCODER_FEEDBACK_MS = 1500;
 constexpr uint32_t LONG_PRESS_MS = 700;
 constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
 constexpr uint32_t NOTIFICATION_DURATION_MS = 4200;
+constexpr uint32_t SHIPPED_NOTIFICATION_DURATION_MS =
+    NOTIFICATION_DURATION_MS + 5000;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
 constexpr uint32_t STARTUP_LOGO_DURATION_MS = 5000;
 constexpr uint32_t CONNECTING_FACE_MIN_DURATION_MS = 2000;
+constexpr uint32_t WAKING_ANIMATION_DURATION_MS = 2000;
 
 // Confirmed faces render live Amp state. Holding the dial button opens a
 // picker that automatically runs the synchronized fixture lifecycle while the
@@ -49,18 +47,26 @@ constexpr uint32_t CONNECTING_FACE_MIN_DURATION_MS = 2000;
 constexpr bool DESIGN_REEL_SCRIPTED = false;
 constexpr uint8_t REEL_VERSION = 5;
 constexpr uint8_t REEL_MODE_COUNT = 4;
-constexpr uint8_t FONT_COUNT = 8;
 constexpr uint8_t DEBUG_FACE_PHASE_COUNT = 5;
 constexpr uint32_t REEL_OVERLAY_MS = 1800;
+constexpr uint32_t IDLE_MESSAGE_DELAY_MS = 20 * 60 * 1000;
+constexpr uint32_t IDLE_MESSAGE_INTERVAL_MS = 20 * 60 * 1000;
+constexpr uint32_t IDLE_MESSAGE_DURATION_MS = 2 * 60 * 1000;
 const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
     "MINIMAL", "KNOCK", "BEACON", "PANIC",
 };
-const char* const FONT_NAMES[FONT_COUNT] = {
-    "CLASSIC",    "PLEX",     "CHAKRA",  "TERMINAL",
-    "SHARE TECH", "AUDIOWIDE", "RAJDHANI", "QUANTICO",
-};
 const char* const DEBUG_FACE_PHASE_NAMES[DEBUG_FACE_PHASE_COUNT] = {
     "IDLE", "WORKING", "MESSAGE", "ATTENTION", "ALL CLEAR",
+};
+const char* const IDLE_MESSAGES[] = {
+    "Quiet here.",
+    "Still here.",
+    "Suspiciously quiet.",
+    "Nothing has exploded.",
+    "I await developments.",
+    "A rare moment of order.",
+    "Threads asleep. Allegedly.",
+    "All systems plausible.",
 };
 
 constexpr int16_t LOGO_FRAME_WIDTH = AMP_LOGO_WIDTH;
@@ -94,7 +100,9 @@ uint32_t demoStartedAt = 0;
 uint32_t lastFrameAt = 0;
 uint32_t initialSetupCompletedAt = 0;
 uint32_t wifiConnectionStartedAt = 0;
+uint32_t wakingAnimationStartedAt = 0;
 bool ampStatsStarted = false;
+bool connectingFaceDrawn = false;
 uint8_t backlightBrightness = 255;
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 DRAM_ATTR const int8_t encoderTransitions[16] = {
@@ -152,9 +160,7 @@ uint8_t reelModeBeforeSelection = 0;
 uint32_t reelModeChangedAt = 0;
 bool reelModeSelecting = false;
 uint32_t reelSelectionStartedAt = 0;
-uint8_t selectedFont = 0;
-uint8_t fontBeforeSelection = 0;
-bool fontSelecting = false;
+uint32_t idleMessageCycleStartedAt = 0;
 
 struct FacePose {
   float gazeX = 0.0F;
@@ -168,6 +174,13 @@ struct FacePose {
   float xOffset = 0.0F;
   float yOffset = 0.0F;
 };
+
+float irisTargetX = 0.0F;
+float irisTargetY = 0.0F;
+float irisPositionX = 0.0F;
+float irisPositionY = 0.0F;
+uint32_t irisUpdatedAt = 0;
+bool irisSmoothingReady = false;
 
 void pushCanvas();
 
@@ -207,7 +220,6 @@ void showFace() {
   uiPage = UiPage::Face;
   debugFaceActive = false;
   reelModeSelecting = false;
-  fontSelecting = false;
   encoderFeedbackActive = false;
   Serial.println("Screen: face");
 }
@@ -216,10 +228,6 @@ void showMainMenu(uint32_t now) {
   if (reelModeSelecting) {
     reelMode = reelModeBeforeSelection;
     reelModeSelecting = false;
-  }
-  if (fontSelecting) {
-    selectedFont = fontBeforeSelection;
-    fontSelecting = false;
   }
   uiPage = UiPage::MainMenu;
   debugFaceActive = false;
@@ -247,17 +255,6 @@ void showFacePicker(uint32_t now) {
   reelSelectionStartedAt = now;
   encoderFeedbackActive = false;
   Serial.println("Face picker: turn to preview, click to confirm");
-}
-
-void showFontPicker(uint32_t now) {
-  uiPage = UiPage::Face;
-  debugFaceActive = false;
-  fontBeforeSelection = selectedFont;
-  fontSelecting = true;
-  reelModeChangedAt = now;
-  reelSelectionStartedAt = now;
-  encoderFeedbackActive = false;
-  Serial.println("Font picker: turn to preview, click to confirm");
 }
 
 void showDebugFace(uint32_t now) {
@@ -320,13 +317,6 @@ void saveSelectedFace() {
   preferences.end();
 }
 
-void saveSelectedFont() {
-  Preferences preferences;
-  preferences.begin("pocketpuck", false);
-  preferences.putUChar("font", selectedFont);
-  preferences.end();
-}
-
 void saveBlinkingPreference() {
   Preferences preferences;
   preferences.begin("pocketpuck", false);
@@ -341,7 +331,6 @@ void resetSettings(uint32_t now) {
   preferences.end();
 
   reelMode = 0;
-  selectedFont = 0;
   blinkingDisabled = false;
   debugFaceActive = false;
   debugFacePhase = 0;
@@ -360,17 +349,9 @@ void handleShortPress(uint32_t now) {
     saveSelectedFace();
     Serial.printf("Design confirmed: %u/%u %s\n", reelMode + 1,
                   REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
-  } else if (uiPage == UiPage::Face && fontSelecting) {
-    fontSelecting = false;
-    reelModeChangedAt = now;
-    saveSelectedFont();
-    Serial.printf("Font confirmed: %u/%u %s\n", selectedFont + 1,
-                  FONT_COUNT, FONT_NAMES[selectedFont]);
   } else if (uiPage == UiPage::MainMenu) {
     if (mainMenuIndex == 0) {
       showFacePicker(now);
-    } else if (mainMenuIndex == 1) {
-      showFontPicker(now);
     } else {
       showSettings(now);
     }
@@ -403,7 +384,7 @@ void updateControls(uint32_t now) {
     if (uiPage == UiPage::MainMenu) {
       const int16_t next = static_cast<int16_t>(mainMenuIndex) + encoderSteps;
       mainMenuIndex = static_cast<uint8_t>(
-          std::max<int16_t>(0, std::min<int16_t>(2, next)));
+          std::max<int16_t>(0, std::min<int16_t>(1, next)));
       lastBrowserInteractionAt = now;
     } else if (uiPage == UiPage::Settings) {
       const int16_t next =
@@ -423,13 +404,6 @@ void updateControls(uint32_t now) {
       reelModeChangedAt = now;
       Serial.printf("Design preview: %u/%u %s\n", reelMode + 1,
                     REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
-    } else if (fontSelecting) {
-      const int16_t next =
-          (static_cast<int16_t>(selectedFont) + encoderSteps) % FONT_COUNT;
-      selectedFont = static_cast<uint8_t>((next + FONT_COUNT) % FONT_COUNT);
-      reelModeChangedAt = now;
-      Serial.printf("Font preview: %u/%u %s\n", selectedFont + 1,
-                    FONT_COUNT, FONT_NAMES[selectedFont]);
     } else if (debugFaceActive) {
       const int16_t next =
           (static_cast<int16_t>(debugFacePhase) + encoderSteps) %
@@ -671,39 +645,106 @@ void drawBezierMouth(const FacePose& pose) {
   }
 }
 
+void drawClippedEllipse(int16_t centerX, int16_t centerY, int16_t radiusX,
+                        int16_t radiusY, int16_t clipTop,
+                        int16_t clipBottom, uint16_t color) {
+  const int16_t top = std::max<int16_t>(centerY - radiusY, clipTop);
+  const int16_t bottom = std::min<int16_t>(centerY + radiusY, clipBottom);
+  if (top == centerY - radiusY && bottom == centerY + radiusY) {
+    canvas.fillEllipse(centerX, centerY, radiusX, radiusY, color);
+    return;
+  }
+  for (int16_t y = top; y <= bottom; ++y) {
+    const float normalizedY =
+        static_cast<float>(y - centerY) / static_cast<float>(radiusY);
+    const int16_t rowRadius = std::lround(
+        radiusX * std::sqrt(std::max(0.0F, 1.0F - normalizedY * normalizedY)));
+    canvas.drawFastHLine(centerX - rowRadius, y, rowRadius * 2 + 1, color);
+  }
+}
+
+void drawClosedEye(int16_t centerX, int16_t centerY, int16_t radiusX) {
+  int16_t previousX = centerX - radiusX;
+  int16_t previousY = centerY;
+  for (uint8_t step = 1; step <= 12; ++step) {
+    const float offset = step / 6.0F - 1.0F;
+    const int16_t x = centerX - radiusX + radiusX * 2 * step / 12;
+    const int16_t y =
+        centerY + std::lround((1.0F - offset * offset) * 5.0F);
+    drawThickLine(previousX, previousY, x, y, eyeShadowColor, 4);
+    previousX = x;
+    previousY = y;
+  }
+}
+
 void drawEye(int16_t centerX, float openness, const FacePose& pose) {
   const int16_t centerY = std::lround(82 + FACE_Y_OFFSET + pose.yOffset);
   const int16_t radiusX = std::lround(29.0F * pose.eyeScale);
-  const int16_t fullRadiusY = std::lround(29.0F * pose.eyeScale);
-  const int16_t radiusY =
-      std::max<int16_t>(2, std::lround(fullRadiusY * clamp01(openness)));
+  const int16_t radiusY = std::lround(29.0F * pose.eyeScale);
+  const float open = clamp01(openness);
 
-  if (openness < 0.09F) {
-    drawThickLine(centerX - radiusX, centerY, centerX + radiusX, centerY,
-                  eyeShadowColor, 4);
+  if (open < 0.08F) {
+    drawClosedEye(centerX, centerY, radiusX);
     return;
   }
 
-  canvas.fillEllipse(centerX + 1, centerY + 3, radiusX + 3, radiusY + 3,
-                     eyeShadowColor);
-  canvas.fillEllipse(centerX, centerY, radiusX, radiusY, eyeColor);
+  const int16_t closedY = centerY + 5;
+  const int16_t clipTop =
+      std::lround(mix(closedY, centerY - radiusY, open));
+  const int16_t clipBottom =
+      std::lround(mix(closedY, centerY + radiusY, open));
+  drawClippedEllipse(centerX + 1, centerY + 3, radiusX + 3, radiusY + 3,
+                     clipTop, clipBottom + 6, eyeShadowColor);
+  drawClippedEllipse(centerX, centerY, radiusX, radiusY, clipTop, clipBottom,
+                     eyeColor);
 
-  if (openness < 0.28F) {
+  if (open < 0.28F) {
     return;
   }
 
   const int16_t pupilRadius =
       std::max<int16_t>(4, std::lround(7.0F * pose.pupilScale));
   const int16_t availableX = std::max<int16_t>(0, radiusX - pupilRadius - 5);
-  const int16_t availableY = std::max<int16_t>(0, radiusY - pupilRadius - 4);
+  const int16_t availableY =
+      std::max<int16_t>(0, (clipBottom - clipTop) / 2 - pupilRadius - 4);
   const int16_t pupilX = centerX + std::lround(pose.gazeX * availableX);
   const int16_t pupilY = centerY + std::lround(pose.gazeY * availableY);
 
-  canvas.fillCircle(pupilX, pupilY, pupilRadius, pupilColor);
-  canvas.fillCircle(pupilX - 2, pupilY - 2, 2, eyeHighlightColor);
+  drawClippedEllipse(pupilX, pupilY, pupilRadius, pupilRadius, clipTop,
+                     clipBottom, pupilColor);
+  drawClippedEllipse(pupilX - 2, pupilY - 2, 2, 2, clipTop, clipBottom,
+                     eyeHighlightColor);
 }
 
-void drawFace(const FacePose& pose) {
+FacePose smoothIris(const FacePose& targetPose) {
+  FacePose pose = targetPose;
+  const uint32_t now = millis();
+  if (!irisSmoothingReady) {
+    irisTargetX = targetPose.gazeX;
+    irisTargetY = targetPose.gazeY;
+    irisPositionX = targetPose.gazeX;
+    irisPositionY = targetPose.gazeY;
+    irisUpdatedAt = now;
+    irisSmoothingReady = true;
+  } else {
+    const uint32_t elapsed =
+        std::min<uint32_t>(now - irisUpdatedAt, FRAME_INTERVAL_MS);
+    const float blend =
+        1.0F - std::exp(-static_cast<float>(elapsed) /
+                        IRIS_SMOOTHING_TIME_MS);
+    irisTargetX = mix(irisTargetX, targetPose.gazeX, blend);
+    irisTargetY = mix(irisTargetY, targetPose.gazeY, blend);
+    irisPositionX = mix(irisPositionX, irisTargetX, blend);
+    irisPositionY = mix(irisPositionY, irisTargetY, blend);
+    irisUpdatedAt = now;
+  }
+  pose.gazeX = irisPositionX;
+  pose.gazeY = irisPositionY;
+  return pose;
+}
+
+void drawFace(const FacePose& targetPose) {
+  const FacePose pose = smoothIris(targetPose);
   const int16_t faceX = std::lround(pose.xOffset);
   drawFaceBackground(SCREEN_WIDTH / 2 + faceX);
 
@@ -724,21 +765,28 @@ FacePose neutralPose() {
   return FacePose{};
 }
 
+FacePose wakingPose(uint32_t elapsed) {
+  FacePose pose = neutralPose();
+  const auto eyeOpening = [elapsed](uint32_t delay) {
+    if (elapsed <= delay) {
+      return 0.0F;
+    }
+    return smoothStep((elapsed - delay) / 1300.0F);
+  };
+  pose.leftEyeOpen = eyeOpening(160);
+  pose.rightEyeOpen = eyeOpening(280);
+  pose.gazeY = mix(0.35F, 0.0F, smoothStep(elapsed / 1700.0F));
+  return pose;
+}
+
 void setSelectedFont(uint8_t size) {
-  if (selectedFont == 0 || size == 1) {
+  if (size == 1) {
     canvas.setFont();
     canvas.setTextSize(size);
     return;
   }
 
-  const GFXfont* fonts[] = {nullptr, &IBMPlexMono_Medium9pt7b,
-                            &ChakraPetch_SemiBold9pt7b,
-                            &VT323_Regular9pt7b,
-                            &ShareTechMono_Regular9pt7b,
-                            &Audiowide_Regular9pt7b,
-                            &Rajdhani_SemiBold9pt7b,
-                            &Quantico_Bold9pt7b};
-  canvas.setFont(fonts[selectedFont]);
+  canvas.setFont(&IBMPlexMono_Medium9pt7b);
   canvas.setTextSize(std::max<uint8_t>(1, (size + 1) / 2));
 }
 
@@ -818,11 +866,9 @@ void drawMainMenu() {
   canvas.fillScreen(logoBackground);
   drawCenteredText("MENU", 12, 2, eyeColor);
   canvas.drawFastHLine(12, 36, 296, logoHighlightColor);
-  drawMenuRow("SELECT FACE", REEL_MODE_NAMES[reelMode], 47,
+  drawMenuRow("SELECT FACE", REEL_MODE_NAMES[reelMode], 75,
               mainMenuIndex == 0);
-  drawMenuRow("SELECT FONT", FONT_NAMES[selectedFont], 103,
-              mainMenuIndex == 1);
-  drawMenuRow("SETTINGS", nullptr, 159, mainMenuIndex == 2);
+  drawMenuRow("SETTINGS", nullptr, 131, mainMenuIndex == 1);
   drawCenteredText("TURN: SELECT   PRESS: OPEN", 218, 1, textureColor);
 }
 
@@ -877,7 +923,7 @@ void drawStatsPanel(const AmpStatsSnapshot& stats) {
     return;
   }
   if (!stats.wifiConnected) {
-    drawCenteredText("CONNECTING WIFI", 207, 2, eyeColor);
+    drawCenteredText("CONNECTING", 207, 2, eyeColor);
     return;
   }
   if (!stats.available) {
@@ -1088,7 +1134,7 @@ void drawThreadOverview() {
     const char* status = !stats.configured
                              ? "CONFIGURE WIFI"
                              : (!stats.wifiConnected
-                                    ? "CONNECTING WIFI"
+                                    ? "CONNECTING"
                                     : (stats.reconnecting ? "AMP RECONNECTING"
                                                           : "BRIDGE UNAVAILABLE"));
     drawCenteredText(status, 108, 2, eyeColor);
@@ -1154,7 +1200,7 @@ void drawThreadOverview() {
 }
 
 void splitTitle(const char* title, char* first, char* second) {
-  constexpr size_t maxCharacters = 24;
+  constexpr size_t maxCharacters = 22;
   const size_t length = std::strlen(title);
   if (length <= maxCharacters) {
     std::snprintf(first, maxCharacters + 1, "%s", title);
@@ -1410,7 +1456,7 @@ ReelScene liveReelScene(uint32_t now) {
 
   const uint32_t notificationElapsed = now - notificationStartedAt;
   if (notificationKind == NotificationKind::Shipped &&
-      notificationElapsed < NOTIFICATION_DURATION_MS) {
+      notificationElapsed < SHIPPED_NOTIFICATION_DURATION_MS) {
     scene.phase = ReelPhase::Shipped;
     scene.phaseElapsed = notificationElapsed;
     std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
@@ -1447,7 +1493,7 @@ ReelScene liveReelScene(uint32_t now) {
     scene.phaseElapsed = NOTIFICATION_DURATION_MS + 200 + now;
   } else {
     scene.phase = ReelPhase::Idle;
-    scene.phaseElapsed = now % REEL_IDLE_MS;
+    scene.phaseElapsed = now;
   }
 
   const AmpThreadSummary* thread = nullptr;
@@ -1532,19 +1578,80 @@ ReelStatus reelStatus(const ReelScene& scene) {
   return status;
 }
 
+float bottomRowGlance(uint32_t elapsed) {
+  constexpr uint32_t cycleMs = 7000;
+  constexpr uint32_t glanceStartMs = 1800;
+  constexpr uint32_t glanceInMs = 450;
+  constexpr uint32_t glanceHoldMs = 650;
+  constexpr uint32_t glanceOutMs = 550;
+  const uint32_t phase = elapsed % cycleMs;
+  if (phase < glanceStartMs) {
+    return 0.0F;
+  }
+  if (phase < glanceStartMs + glanceInMs) {
+    return smoothStep(static_cast<float>(phase - glanceStartMs) / glanceInMs);
+  }
+  if (phase < glanceStartMs + glanceInMs + glanceHoldMs) {
+    return 1.0F;
+  }
+  if (phase < glanceStartMs + glanceInMs + glanceHoldMs + glanceOutMs) {
+    const uint32_t glanceOutElapsed =
+        phase - glanceStartMs - glanceInMs - glanceHoldMs;
+    return 1.0F -
+           smoothStep(static_cast<float>(glanceOutElapsed) / glanceOutMs);
+  }
+  return 0.0F;
+}
+
 FacePose reelPose(const ReelScene& scene) {
   const uint32_t t = scene.phaseElapsed;
   FacePose pose = neutralPose();
   switch (scene.phase) {
-    case ReelPhase::Idle:
-      pose.gazeX = std::sin(t * 0.00078F) * 0.55F;
-      pose.gazeY = std::cos(t * 0.0011F) * 0.12F;
+    case ReelPhase::Idle: {
+      constexpr uint32_t distractedCycleMs = 31000;
+      constexpr uint32_t distractedStartMs = 19000;
+      constexpr uint32_t distractedInMs = 1200;
+      constexpr uint32_t distractedHoldMs = 2600;
+      constexpr uint32_t distractedOutMs = 1500;
+      const uint32_t distractedElapsed = t % distractedCycleMs;
+      float distracted = 0.0F;
+      if (distractedElapsed >= distractedStartMs &&
+          distractedElapsed < distractedStartMs + distractedInMs) {
+        distracted = smoothStep(
+            static_cast<float>(distractedElapsed - distractedStartMs) /
+            distractedInMs);
+      } else if (distractedElapsed < distractedStartMs + distractedInMs +
+                                             distractedHoldMs &&
+                 distractedElapsed >= distractedStartMs + distractedInMs) {
+        distracted = 1.0F;
+      } else if (distractedElapsed < distractedStartMs + distractedInMs +
+                                             distractedHoldMs +
+                                             distractedOutMs &&
+                 distractedElapsed >= distractedStartMs + distractedInMs +
+                                          distractedHoldMs) {
+        distracted = 1.0F - smoothStep(static_cast<float>(
+                                             distractedElapsed -
+                                             distractedStartMs -
+                                             distractedInMs -
+                                             distractedHoldMs) /
+                                         distractedOutMs);
+      }
+      pose.gazeX = std::sin(t * 0.00024F) * 0.55F;
+      pose.gazeY = std::sin(t * 0.00018F + 1.2F) * 0.12F;
+      pose.gazeX = mix(pose.gazeX, 0.0F, distracted);
+      pose.gazeY = mix(pose.gazeY, -0.06F, distracted);
+      pose.eyeScale = mix(1.0F, 1.16F, distracted);
+      pose.pupilScale = mix(1.0F, 0.58F, distracted);
       pose.leftEyeOpen = blinkAt(t % 6000, 2600, 280);
+      pose.leftEyeOpen = mix(pose.leftEyeOpen, 1.0F, distracted);
       pose.rightEyeOpen = pose.leftEyeOpen;
       break;
+    }
     case ReelPhase::Working:
-      pose.gazeX = mix(0.0F, 0.62F, scene.intro) + std::sin(t * 0.0008F) * 0.1F;
-      pose.gazeY = mix(0.0F, -0.42F, scene.intro);
+      pose.gazeX = mix(0.0F, 0.25F, scene.intro) +
+                   std::sin(t * 0.0008F) * 0.28F * scene.intro;
+      pose.gazeY = mix(0.0F, -0.28F, scene.intro) +
+                   std::cos(t * 0.0007F) * 0.08F * scene.intro;
       pose.leftEyeOpen = blinkAt(t % 5000, 4200, 300);
       pose.rightEyeOpen = pose.leftEyeOpen;
       pose.mouthCurveY = 148.0F;
@@ -1552,6 +1659,7 @@ FacePose reelPose(const ReelScene& scene) {
     case ReelPhase::Message:
       pose.eyeScale = mix(1.0F, 1.08F, scene.intro);
       pose.pupilScale = mix(1.0F, 0.9F, scene.intro);
+      pose.gazeX = std::sin(t * 0.0008F) * 0.16F * scene.intro;
       pose.gazeY = -0.25F * scene.intro;
       pose.mouthCurveY = mix(149.0F, 155.0F, scene.intro);
       break;
@@ -1572,6 +1680,11 @@ FacePose reelPose(const ReelScene& scene) {
       pose.rightEyeOpen = pose.leftEyeOpen;
       pose.mouthCurveY = mix(149.0F, 141.0F, scene.intro);
       break;
+  }
+  if (scene.phase == ReelPhase::Working || scene.phase == ReelPhase::Message) {
+    const float glance = bottomRowGlance(t) * scene.intro;
+    pose.gazeX = mix(pose.gazeX, 0.0F, glance * 0.65F);
+    pose.gazeY = mix(pose.gazeY, 0.72F, glance);
   }
   if (scene.stats.configured && scene.stats.wifiConnected &&
       !scene.stats.available) {
@@ -1630,7 +1743,37 @@ const char* reelDetail(const ReelScene& scene) {
 }
 
 void drawDesignMinimal(const ReelScene& scene) {
-  drawFace(reelPose(scene));
+  FacePose pose = reelPose(scene);
+  const bool persistentAttention =
+      scene.phase == ReelPhase::Attention &&
+      scene.phaseElapsed >= NOTIFICATION_DURATION_MS;
+  if (persistentAttention) {
+    pose.xOffset =
+        std::sin(scene.phaseElapsed * 0.09F) * scene.beat * 5.0F;
+    pose.eyeScale += 0.28F;
+    pose.pupilScale -= 0.22F;
+    pose.mouthCurveY += 10.0F;
+  }
+  drawFace(pose);
+  if (scene.phase == ReelPhase::Idle) {
+    const uint32_t idleElapsed = millis() - idleMessageCycleStartedAt;
+    if (idleMessageCycleStartedAt != 0 &&
+        idleElapsed >= IDLE_MESSAGE_DELAY_MS) {
+      const uint32_t messageElapsed = idleElapsed - IDLE_MESSAGE_DELAY_MS;
+      if (messageElapsed % IDLE_MESSAGE_INTERVAL_MS <
+          IDLE_MESSAGE_DURATION_MS) {
+        constexpr size_t messageCount =
+            sizeof(IDLE_MESSAGES) / sizeof(IDLE_MESSAGES[0]);
+        const size_t messageIndex =
+            (messageElapsed / IDLE_MESSAGE_INTERVAL_MS) % messageCount;
+        drawCenteredText(IDLE_MESSAGES[messageIndex], 210, 2, 0xFFFF);
+      }
+    }
+    return;
+  }
+  if (scene.phase == ReelPhase::Resolved) {
+    return;
+  }
   const ReelStatus status = reelStatus(scene);
   uint16_t textWidth;
   uint16_t textHeight;
@@ -1829,25 +1972,72 @@ void drawDesignKnock(const ReelScene& scene) {
   }
 }
 
-// BEACON — a graphic pulse radiates behind a central message capsule. It has
-// Siren's energy but concentrates attention instead of filling every edge.
+// BEACON — a graphic pulse radiates behind a central message capsule. Working
+// threads use a compact signal display of their own so the face stays clear and
+// no status text has to sit against the bottom edge of the screen.
 void drawDesignBeacon(const ReelScene& scene) {
   const float show = reelEventVisibility(scene);
-  drawDesignMinimal(scene);
-  if (show < 0.01F) {
-    return;
-  }
-  const float exit = reelEventExit(scene);
   const uint16_t color = reelPhaseColor(scene);
   if (scene.phase == ReelPhase::Working) {
-    for (uint8_t dot = 0; dot < 6; ++dot) {
-      const float angle = FULL_ROTATION_RADIANS * dot / 6.0F +
-                          scene.phaseElapsed * 0.001F;
-      canvas.fillCircle(160 + std::cos(angle) * 112,
-                        116 + std::sin(angle) * 98, 3, color);
+    if (show < 0.01F) {
+      drawDesignMinimal(scene);
+      return;
+    }
+    drawFace(reelPose(scene));
+
+    // Three expanding, dotted ellipses read as a radio ping without drawing a
+    // hard ring through Puck's eyes.
+    for (uint8_t ring = 0; ring < 3; ++ring) {
+      const float pulse = std::fmod(scene.phaseElapsed / 1500.0F +
+                                       ring / 3.0F,
+                                   1.0F);
+      const float radiusX = mix(70.0F, 151.0F, pulse);
+      const float radiusY = mix(45.0F, 107.0F, pulse);
+      const uint16_t ringColor = pulse < 0.58F ? color : textureColor;
+      for (uint8_t marker = 0; marker < 20; ++marker) {
+        const float angle = FULL_ROTATION_RADIANS * marker / 20.0F;
+        const int16_t x = std::lround(160.0F + std::cos(angle) * radiusX);
+        const int16_t y = std::lround(116.0F + std::sin(angle) * radiusY);
+        if (y > 48) {
+          const uint16_t background =
+              canvas.getBuffer()[y * SCREEN_WIDTH + x];
+          const float inverse = 1.0F - show;
+          const uint16_t fadedColor =
+              (std::lround(((ringColor >> 11) & 0x1F) * show +
+                           ((background >> 11) & 0x1F) * inverse)
+               << 11) |
+              (std::lround(((ringColor >> 5) & 0x3F) * show +
+                           ((background >> 5) & 0x3F) * inverse)
+               << 5) |
+              std::lround((ringColor & 0x1F) * show +
+                          (background & 0x1F) * inverse);
+          canvas.fillCircle(x, y, marker % 5 == 0 ? 2 : 1, fadedColor);
+        }
+      }
+    }
+
+    const float exit = reelEventExit(scene);
+    const int16_t panelWidth = std::lround(mix(96.0F, 300.0F, show));
+    constexpr int16_t panelHeight = 46;
+    const int16_t panelY = 7 - std::lround(exit * 62.0F);
+    const int16_t panelX = (SCREEN_WIDTH - panelWidth) / 2;
+    canvas.fillRoundRect(panelX, panelY, panelWidth, panelHeight, 8,
+                         logoBackground);
+    canvas.drawRoundRect(panelX, panelY, panelWidth, panelHeight, 8, color);
+    if (show > 0.68F || exit > 0.0F) {
+      drawCenteredText("THREAD ACTIVE", panelY + 6, 2, color);
+      char title[44];
+      copyEllipsized(title, sizeof(title), scene.eventTitle, 41);
+      drawCenteredText(title, panelY + 32, 1, eyeColor);
     }
     return;
   }
+  if (show < 0.01F) {
+    drawDesignMinimal(scene);
+    return;
+  }
+  drawFace(reelPose(scene));
+  const float exit = reelEventExit(scene);
   const uint8_t rayCount = scene.phase == ReelPhase::Attention ? 16 : 8;
   for (uint8_t ray = 0; ray < rayCount; ++ray) {
     const float angle = FULL_ROTATION_RADIANS * ray / rayCount +
@@ -1978,15 +2168,6 @@ void drawReelOverlay(uint32_t now) {
   if (now - reelModeChangedAt >= REEL_OVERLAY_MS) {
     return;
   }
-  if (fontSelecting) {
-    char fontLabel[24];
-    std::snprintf(fontLabel, sizeof(fontLabel), "%u/%u %s",
-                  selectedFont + 1, FONT_COUNT, FONT_NAMES[selectedFont]);
-    canvas.fillRoundRect(4, 3, SCREEN_WIDTH - 8, 24, 5, logoBackground);
-    canvas.drawRoundRect(4, 3, SCREEN_WIDTH - 8, 24, 5, textureColor);
-    drawCenteredText(fontLabel, 6, 2, eyeColor);
-    return;
-  }
   char label[24];
   std::snprintf(label, sizeof(label), "%u/%u %s",
                 reelMode + 1, REEL_MODE_COUNT, REEL_MODE_NAMES[reelMode]);
@@ -2010,14 +2191,22 @@ void drawReelOverlay(uint32_t now) {
 
 void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
   const uint32_t reelElapsed =
-      (reelModeSelecting || fontSelecting) ? now - reelSelectionStartedAt
-                                          : elapsed;
-  const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting ||
-                        fontSelecting;
+      reelModeSelecting ? now - reelSelectionStartedAt : elapsed;
+  const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting;
   const ReelScene scene = debugFaceActive
                               ? reelScene(debugFaceElapsed(now))
                               : (scripted ? reelScene(reelElapsed)
                                           : liveReelScene(now));
+  const bool quietlyIdle = !debugFaceActive && !scripted &&
+                           scene.phase == ReelPhase::Idle &&
+                           scene.stats.available && scene.stats.total > 0;
+  if (quietlyIdle) {
+    if (idleMessageCycleStartedAt == 0) {
+      idleMessageCycleStartedAt = now;
+    }
+  } else {
+    idleMessageCycleStartedAt = 0;
+  }
   if (scene.phase == ReelPhase::Shipped) {
     drawShippedLiftoff(scene.phaseElapsed, scene.eventTitle);
     pushCanvas();
@@ -2133,18 +2322,14 @@ void setup() {
   preferences.begin("pocketpuck", false);
   const uint8_t savedReelVersion = preferences.getUChar("designVer", 0);
   const uint8_t savedReelMode = preferences.getUChar("design", 0);
-  const uint8_t savedFont = preferences.getUChar("font", 0);
   blinkingDisabled = preferences.getBool("noBlink", false);
   reelMode = savedReelVersion == REEL_VERSION &&
                      savedReelMode < REEL_MODE_COUNT
                  ? savedReelMode
                  : 0;
-  selectedFont = savedFont < FONT_COUNT ? savedFont : 0;
   preferences.end();
   Serial.printf("Saved design: %u/%u %s\n", reelMode + 1, REEL_MODE_COUNT,
                 REEL_MODE_NAMES[reelMode]);
-  Serial.printf("Saved font: %u/%u %s\n", selectedFont + 1, FONT_COUNT,
-                FONT_NAMES[selectedFont]);
   Serial.printf("Blinking: %s\n", blinkingDisabled ? "disabled" : "enabled");
 
   // D13 is both the default SPI clock and the Nano's yellow LED. Keep it low
@@ -2208,26 +2393,46 @@ void loop() {
 
   lastFrameAt = now;
   const AmpStatsSnapshot stats = getAmpStats();
-  const bool connectingFaceComplete =
-      ampStatsStarted &&
-      now - wifiConnectionStartedAt >= CONNECTING_FACE_MIN_DURATION_MS &&
-      (!stats.configured || stats.wifiConnected || stats.initialAttemptComplete);
-  if (initialSetupCompletedAt == 0 && connectingFaceComplete) {
-    initialSetupCompletedAt = now;
-  }
   if (!ampStatsStarted) {
     drawLogo(now - demoStartedAt);
     pushCanvas();
     return;
   }
   if (initialSetupCompletedAt == 0) {
-    AmpStatsSnapshot connectingStats = stats;
-    connectingStats.configured = true;
-    connectingStats.wifiConnected = false;
-    drawFace(neutralPose());
-    drawStatsPanel(connectingStats);
-    pushCanvas();
-    return;
+    const uint32_t connectingElapsed = now - wifiConnectionStartedAt;
+    if ((!stats.configured ||
+         (!stats.wifiConnected && stats.initialAttemptComplete)) &&
+        connectingElapsed >= CONNECTING_FACE_MIN_DURATION_MS) {
+      initialSetupCompletedAt = now;
+    } else {
+      if (wakingAnimationStartedAt == 0 && stats.wifiConnected &&
+          connectingElapsed >= CONNECTING_FACE_MIN_DURATION_MS) {
+        wakingAnimationStartedAt = now;
+      }
+      if (wakingAnimationStartedAt == 0) {
+        if (!connectingFaceDrawn) {
+          AmpStatsSnapshot connectingStats = stats;
+          connectingStats.configured = true;
+          connectingStats.wifiConnected = false;
+          FacePose sleepingPose = neutralPose();
+          sleepingPose.leftEyeOpen = 0.0F;
+          sleepingPose.rightEyeOpen = 0.0F;
+          drawFace(sleepingPose);
+          drawStatsPanel(connectingStats);
+          pushCanvas();
+          connectingFaceDrawn = true;
+        }
+        return;
+      }
+
+      const uint32_t wakingElapsed = now - wakingAnimationStartedAt;
+      if (wakingElapsed < WAKING_ANIMATION_DURATION_MS) {
+        drawFace(wakingPose(wakingElapsed));
+        pushCanvas();
+        return;
+      }
+      initialSetupCompletedAt = now;
+    }
   }
 
   const uint32_t mainElapsed = now - initialSetupCompletedAt;

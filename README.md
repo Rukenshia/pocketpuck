@@ -44,12 +44,10 @@ On the animated face, turn the dial to adjust the LCD backlight and press it to
 open the thread list. Hold the button for 700 ms to open the main menu. Select
 **Select Face** to preview the Minimal, Knock, Beacon, and Panic designs with a
 synchronized scripted status lifecycle; pressing confirms a choice that
-persists across reboots. **Select Font** similarly previews and persists
-Classic, IBM Plex Mono, Chakra Petch, and VT323 treatments for the prominent
-display copy, plus Share Tech Mono, Audiowide, Rajdhani, and Quantico. Compact
-labels retain the pixel font so dense screens remain readable. The **Settings**
-submenu can disable Puck's blinking, open **Debug Face**, or reset all settings
-to their defaults. Debug Face holds the
+persists across reboots. Prominent display copy uses IBM Plex Mono, while
+compact labels retain the pixel font so dense screens remain readable. The
+**Settings** submenu can disable Puck's blinking, open **Debug Face**, or reset
+all settings to their defaults. Debug Face holds the
 currently selected face on a dial-selected fixture state—Idle, Working, Message,
 Attention, or All Clear. Each dial change plays that state's normal transition,
 then holds it instead of advancing on the normal timer; press the dial to return
