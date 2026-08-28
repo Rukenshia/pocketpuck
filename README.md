@@ -2,7 +2,7 @@
 
 |                                                                                       |                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| <img src="docs/pocketpuck.jpg" alt="An image of the PocketPuck device" width="200" /> | A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state and lets you know if you need to take action. It's also very cute. |
+| <img src="docs/pocketpuck.jpg" alt="An image of the PocketPuck device" width="400" /> | A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state and lets you know if you need to take action. It's also very cute. |
 
 ## Hardware
 
@@ -10,6 +10,20 @@
 - [Waveshare 2inch LCD Module](https://www.waveshare.com/wiki/2inch_LCD_Module)
   (240 x 320, ST7789V)
 - Rotary encoder with push button (KY-040 or similar)
+
+### 3D Models
+
+You can find the 3d models in the `models` directory.
+
+| Model Name        | Description                                      |
+| ----------------- | ------------------------------------------------ |
+| `puck_manual.stl` | The main body of the PocketPuck.                 |
+| `puck_hat.stl`    | A cute cowboy hat.                               |
+| `puck_obelisk`    | A small obelisk to put on top of the PocketPuck. |
+| `puck_orb.stl`    | An orb as a hat.                                 |
+| `puck_knob.stl`   | An interestingly shaped knob as a hat.           |
+
+You can hot glue the display to the inside of the body or use tape to secure it. The rotary dial goes through the hole and is fastened with a nut.
 
 ### Wiring
 
