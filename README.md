@@ -1,5 +1,8 @@
 # PocketPuck
 
+> [!NOTE]
+> This project is not associated with Amp. It's just a fun little side project to put Puck on my desk.
+
 |                                                                                       |                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | <img src="docs/pocketpuck.jpg" alt="An image of the PocketPuck device" width="400" /> | A body for Puck, [Amp](https://ampcode.com)'s companion. Synchronises your current thread state and lets you know if you need to take action. It's also very cute. |
