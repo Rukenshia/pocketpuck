@@ -11,6 +11,14 @@ Full video demo:
 
 <video controls src="https://github.com/user-attachments/assets/eebd0190-7875-4f72-867d-91fb097cefb3"></video>
 
+## Usage
+
+Once connected, PocketPuck will automatically synchronise with your current Amp thread state. It will let you know if you have any threads waiting for you or tell you that there are new messages waiting for you (= a thread probably finished).
+
+You press the dial once to open a thread overview that allows you to scroll through your threads. Pressing the dial again will then show a little bit more information on that thread. Long press the dial to get back to the main screen.
+
+To open the Settings, long press the dial from the main screen. You can change the display fae, change whether Puck should blink or not, and reset all settings. Settings are persisted. There are a total of four display faces to choose from: from a very minimal one to reduce distractions to what you can see in the video (and even more unhinged).
+
 ## Hardware
 
 - Arduino Nano ESP32 (any ESP32 will work, but you might have to change pinout assignments)
@@ -133,3 +141,14 @@ cp include/network_config.example.h include/network_config.h
 ```
 
 Edit the `POCKETPUCK_WIFI_SSID`, `POCKETPUCK_WIFI_PASSWORD`, and `POCKETPUCK_STATS_URL` (for example `http://192.168.178.123:8765/stats`) values accordingly. Note that most ESP32 only support 2.4GHz WiFi networks, so make sure your router is configured correctly.
+
+## FAQ (nobody has asked me anything yet)
+
+> Why?
+
+I sometimes start threads and then go on to do other things (definitely not procrastinating). I wanted a way to know if I have threads waiting for me. So instead of enabling notifications on my phone, I decided to build something completely unnecessary.
+
+> Why is he so thick?
+
+I overestimated how much space I needed inside and I have not modelled anything in Blender for a long time. This was supposed to just take a few days and I wanted to stick to that timeline.
+The display being inset so deeply is also a result of me not having enough patience to do things properly in Blender. I've been using OnShape for most of my things recently and am just out of practice.
