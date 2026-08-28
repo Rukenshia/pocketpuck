@@ -28,7 +28,10 @@ To open the Settings, long press the dial from the main screen. You can change t
 
 ### 3D Models
 
-You can find the 3d models in the `models` directory.
+You can find the 3d models in the `models` directory. You have a choice of multiple hats to give your PocketPuck some extra personality.
+
+<img src="docs/hats.jpg" width=200 />
+(not pictured: the orb - that is still printing)
 
 | Model Name        | Description                                      |
 | ----------------- | ------------------------------------------------ |
