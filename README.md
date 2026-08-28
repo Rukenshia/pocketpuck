@@ -156,3 +156,7 @@ The display being inset so deeply is also a result of me not having enough patie
 > Why do his hands look so weird?
 
 It was my first time ever trying to even use the Blender sculpting tools and I regret everything.
+
+> Why PocketPuck? He clearly does not fit into my pocket.
+
+My original idea was much more boring (a small case around the display and a small stand), but I pivoted to something more fun. By that time, the repo already existed.
