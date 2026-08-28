@@ -62,8 +62,9 @@ labels retain the pixel font so dense screens remain readable. The **Settings**
 submenu can disable Puck's blinking, open **Debug Face**, or reset all settings,
 including the selected face and font, to their defaults. Debug Face holds the
 currently selected face on a dial-selected fixture state—Idle, Working, Message,
-Attention, or All Clear—rather than advancing on the normal timer; press the
-dial to return to Settings. Outside the picker, the selected design uses live
+Attention, or All Clear. Each dial change plays that state's normal transition,
+then holds it instead of advancing on the normal timer; press the dial to return
+to Settings. Outside the picker, the selected design uses live
 Amp data. Working remains ambient, new
 messages are noticeable, and actionable
 states receive the strongest treatment while directing the user back to Amp.

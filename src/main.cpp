@@ -145,6 +145,7 @@ bool blinkingDisabled = false;
 uint32_t settingsResetAt = 0;
 bool debugFaceActive = false;
 uint8_t debugFacePhase = 0;
+uint32_t debugFacePhaseChangedAt = 0;
 uint8_t selectedThreadIndex = 0;
 AmpThreadSummary detailThread;
 bool detailUnreadAvailable = false;
@@ -274,6 +275,7 @@ void showDebugFace(uint32_t now) {
   uiPage = UiPage::Face;
   debugFaceActive = true;
   debugFacePhase = 0;
+  debugFacePhaseChangedAt = now;
   lastBrowserInteractionAt = now;
   encoderFeedbackActive = false;
   Serial.printf("Debug face: %s; turn to change state, press to return\n",
@@ -354,6 +356,7 @@ void resetSettings(uint32_t now) {
   blinkingDisabled = false;
   debugFaceActive = false;
   debugFacePhase = 0;
+  debugFacePhaseChangedAt = now;
   reelModeChangedAt = now;
   settingsResetAt = now;
   Serial.println("Settings reset to defaults");
@@ -445,6 +448,7 @@ void updateControls(uint32_t now) {
           DEBUG_FACE_PHASE_COUNT;
       debugFacePhase = static_cast<uint8_t>(
           (next + DEBUG_FACE_PHASE_COUNT) % DEBUG_FACE_PHASE_COUNT);
+      debugFacePhaseChangedAt = now;
       Serial.printf("Debug face: %s\n",
                     DEBUG_FACE_PHASE_NAMES[debugFacePhase]);
     } else {
@@ -818,19 +822,32 @@ void setSelectedFont(uint8_t size) {
 
 uint16_t selectedTextWidth(const char* text, uint8_t size) {
   setSelectedFont(size);
+  canvas.setTextWrap(false);
   int16_t x1;
   int16_t y1;
   uint16_t width;
   uint16_t height;
   canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
+  canvas.setTextWrap(true);
   canvas.setFont();
   canvas.setTextSize(1);
   return width;
 }
 
+uint8_t fittedSelectedTextSize(const char* text, uint8_t preferredSize,
+                               uint16_t maxWidth) {
+  for (uint8_t size = preferredSize; size > 1; --size) {
+    if (selectedTextWidth(text, size) <= maxWidth) {
+      return size;
+    }
+  }
+  return 1;
+}
+
 void drawSelectedText(const char* text, int16_t x, int16_t y, uint8_t size,
                       uint16_t color) {
   setSelectedFont(size);
+  canvas.setTextWrap(false);
   canvas.setTextColor(color);
   int16_t x1;
   int16_t y1;
@@ -839,6 +856,7 @@ void drawSelectedText(const char* text, int16_t x, int16_t y, uint8_t size,
   canvas.getTextBounds(text, 0, 0, &x1, &y1, &width, &height);
   canvas.setCursor(x - x1, y - y1);
   canvas.print(text);
+  canvas.setTextWrap(true);
   canvas.setFont();
   canvas.setTextSize(1);
 }
@@ -1480,20 +1498,32 @@ ReelScene reelScene(uint32_t elapsed) {
   return scene;
 }
 
-uint32_t debugFaceElapsed() {
+uint32_t debugFaceElapsed(uint32_t now) {
+  uint32_t phaseStart = 0;
+  uint32_t phaseDuration = REEL_IDLE_MS;
   switch (debugFacePhase) {
     case 0:
-      return 1000;
+      break;
     case 1:
-      return REEL_IDLE_MS + 1000;
+      phaseStart = REEL_IDLE_MS;
+      phaseDuration = REEL_WORKING_MS;
+      break;
     case 2:
-      return REEL_IDLE_MS + REEL_WORKING_MS + 1000;
+      phaseStart = REEL_IDLE_MS + REEL_WORKING_MS;
+      phaseDuration = REEL_MESSAGE_MS;
+      break;
     case 3:
-      return REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS + 1000;
+      phaseStart = REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS;
+      phaseDuration = REEL_ATTENTION_MS;
+      break;
     default:
-      return REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS +
-             REEL_ATTENTION_MS + 1000;
+      phaseStart = REEL_IDLE_MS + REEL_WORKING_MS + REEL_MESSAGE_MS +
+                   REEL_ATTENTION_MS;
+      phaseDuration = REEL_RESOLVED_MS;
+      break;
   }
+  return phaseStart +
+         std::min(now - debugFacePhaseChangedAt, phaseDuration - 1);
 }
 
 const AmpThreadSummary* reelThreadForPhase(const AmpStatsSnapshot& stats,
@@ -1683,6 +1713,10 @@ FacePose reelPose(const ReelScene& scene) {
       pose.rightEyeOpen = pose.leftEyeOpen;
       pose.mouthCurveY = mix(149.0F, 141.0F, scene.intro);
       break;
+  }
+  if (scene.stats.configured && scene.stats.wifiConnected &&
+      !scene.stats.available) {
+    pose.xOffset += std::sin(t * 0.03F) * 3.0F;
   }
   return pose;
 }
@@ -2250,9 +2284,7 @@ const char* reelEventHeadline(const ReelScene& scene) {
 }
 
 uint8_t reelHeadlineSize(const ReelScene& scene, uint8_t preferred = 4) {
-  const size_t length = std::strlen(reelEventHeadline(scene));
-  const uint8_t fitted = static_cast<uint8_t>(300 / std::max<size_t>(1, length * 6));
-  return std::max<uint8_t>(1, std::min(preferred, fitted));
+  return fittedSelectedTextSize(reelEventHeadline(scene), preferred, 300);
 }
 
 void drawReelEventTitle(const ReelScene& scene, int16_t y, uint16_t color) {
@@ -2922,7 +2954,7 @@ void drawDesignPanic(const ReelScene& scene) {
                    top + (scene.phase == ReelPhase::Attention ? 16 : 11),
                    reelHeadlineSize(scene), logoBackground);
   if (scene.phase == ReelPhase::Message) {
-    const int16_t panelY = 66 - std::lround(exit * 180.0F);
+    const int16_t panelY = 172 + std::lround(exit * 80.0F);
     canvas.fillRoundRect(14, panelY, 292, 68, 8, logoBackground);
     canvas.drawRoundRect(14, panelY, 292, 68, 8, unreadColor);
     drawReelEventTitle(scene, panelY + 6, unreadColor);
@@ -3475,7 +3507,7 @@ void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
   const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting ||
                         fontSelecting;
   const ReelScene scene = debugFaceActive
-                              ? reelScene(debugFaceElapsed())
+                              ? reelScene(debugFaceElapsed(now))
                               : (scripted ? reelScene(reelElapsed)
                                           : liveReelScene(now));
   if (!scripted &&
