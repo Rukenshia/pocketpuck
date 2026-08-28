@@ -10,6 +10,8 @@ export const MAX_DATA_AGE_MS = 30_000;
 export const INITIAL_EMPTY_SETTLE_MS = 2_000;
 export const PRIVATE_RETRY_INTERVAL_MS = 300_000;
 export const PRIVATE_RESYNC_INTERVAL_MS = 20_000;
+export const EVENT_LIMIT = 8;
+export const EVENT_RETENTION_MS = 120_000;
 const SHIP_EVENT_WINDOW_MS = 60_000;
 const AMP_URL = "https://ampcode.com";
 const RIVET_PUBLIC_ENDPOINT =
@@ -159,6 +161,12 @@ export class BridgeCache {
     this.receivedAt = null;
     this.availableAt = null;
     this.hasPublishedData = false;
+    this.eventBaselines = new Map();
+    this.events = [];
+    this.eventSequence = 0;
+    this.eventNamespace = `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
   }
 
   using(source) {
@@ -167,13 +175,98 @@ export class BridgeCache {
 
   publish(value, hasThreads, settleEmpty = false) {
     const now = this.clock();
-    this.value = value;
+    this.value = { ...value, events: this.currentEvents(now) };
     this.receivedAt = now;
     this.availableAt =
       settleEmpty && !hasThreads && !this.hasPublishedData
         ? now + INITIAL_EMPTY_SETTLE_MS
         : now;
     if (hasThreads) this.hasPublishedData = true;
+  }
+
+  currentEvents(now = this.clock()) {
+    this.events = this.events
+      .filter((event) => event.expiresAt > now)
+      .slice(-EVENT_LIMIT);
+    return this.events.map(({ expiresAt: _, ...event }) => event);
+  }
+
+  recordEvents(source, threads) {
+    const next = new Map();
+    for (const thread of threads) {
+      const threadId =
+        typeof thread.threadId === "string"
+          ? thread.threadId
+          : typeof thread.id === "string"
+            ? thread.id
+            : null;
+      const title =
+        typeof thread.title === "string" && thread.title
+          ? thread.title
+          : "Untitled thread";
+      const key = threadId || `title:${title}`;
+      next.set(key, {
+        threadId,
+        title,
+        project: typeof thread.project === "string" ? thread.project : "",
+        state: typeof thread.state === "string" ? thread.state : "unknown",
+        unread:
+          thread.hasUnreadMessages === true || thread.unread === true,
+        shipped: thread.shipped === true,
+        updatedAt: thread.updatedAt,
+      });
+    }
+
+    const previous = this.eventBaselines.get(source);
+    this.eventBaselines.set(source, next);
+    if (!previous) return;
+
+    const candidates = {
+      shipped: [],
+      message: [],
+      working: [],
+      attention: [],
+    };
+    for (const [key, thread] of next) {
+      const before = previous.get(key);
+      const wasWorking = before && ACTIVE_STATES.has(before.state);
+      const needsAttention =
+        thread.state === "awaiting_approval" || thread.state === "error";
+      const neededAttention =
+        before &&
+        (before.state === "awaiting_approval" || before.state === "error");
+      if (thread.shipped && !before?.shipped) candidates.shipped.push(thread);
+      if (thread.unread && !before?.unread) candidates.message.push(thread);
+      if (ACTIVE_STATES.has(thread.state) && !wasWorking) {
+        candidates.working.push(thread);
+      }
+      if (needsAttention && !neededAttention) candidates.attention.push(thread);
+    }
+
+    const now = this.clock();
+    // Append low-priority events first so a bounded simultaneous update retains
+    // shipped, message, and working transitions ahead of attention notices.
+    for (const kind of ["attention", "working", "message", "shipped"]) {
+      candidates[kind]
+        .sort((left, right) =>
+          String(left.updatedAt ?? "").localeCompare(
+            String(right.updatedAt ?? ""),
+          ),
+        )
+        .forEach((thread) => {
+          this.events.push({
+            id: `${this.eventNamespace}-${++this.eventSequence}`,
+            kind,
+            threadId: thread.threadId,
+            title: thread.title,
+            project: thread.project,
+            state: thread.state,
+            observedAt: new Date().toISOString(),
+            expiresAt: now + EVENT_RETENTION_MS,
+          });
+        });
+    }
+    this.currentEvents(now);
   }
 
   markStale(source) {
@@ -215,7 +308,7 @@ export class BridgeCache {
       (thread) => thread.executorConnected,
     ).length;
     const reconnecting = event.reconnecting === true;
-    const items = threads.slice(0, THREAD_LIMIT).map((thread) => ({
+    const eventThreads = threads.map((thread) => ({
       id: typeof thread.id === "string" ? thread.id : null,
       title:
         typeof thread.title === "string" && thread.title
@@ -226,6 +319,8 @@ export class BridgeCache {
       executorConnected: thread.executorConnected,
       unread: false,
     }));
+    this.recordEvents("amp-top", eventThreads);
+    const items = eventThreads.slice(0, THREAD_LIMIT);
     this.publish(
       {
         schemaVersion: 2,
@@ -235,6 +330,7 @@ export class BridgeCache {
           unread: false,
           shipping: false,
           shipped: false,
+          events: true,
         },
         working: running,
         needsAttention: 0,
@@ -291,7 +387,9 @@ export class BridgeCache {
           typeof thread.workspace?.displayName === "string"
             ? thread.workspace.displayName
             : "",
-      }))
+      }));
+    this.recordEvents("user-actor", threads);
+    threads
       .sort((left, right) =>
         String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")),
       )
@@ -345,6 +443,7 @@ export class BridgeCache {
           unread: true,
           shipping: true,
           shipped: true,
+          events: true,
         },
         working: headlineWorking,
         needsAttention,

@@ -13,6 +13,9 @@
 #include "display_config.h"
 #include "fonts/PlexMono9pt7b.h"
 
+// Snapshot-backed UI scenes exceed Arduino's default 8 KB loop task stack.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 namespace {
 
 Adafruit_ST7789 display(LCD_CS, LCD_DC, LCD_RST);
@@ -34,26 +37,26 @@ constexpr uint32_t BROWSER_TIMEOUT_MS = 30000;
 constexpr uint32_t NOTIFICATION_DURATION_MS = 4200;
 constexpr uint32_t SHIPPED_NOTIFICATION_DURATION_MS =
     NOTIFICATION_DURATION_MS + 5000;
+constexpr uint8_t NOTIFICATION_QUEUE_LIMIT = 8;
+constexpr uint8_t SEEN_EVENT_LIMIT = AMP_THREAD_EVENT_LIMIT;
 
 constexpr uint32_t LOGO_ROTATION_MS = 5000;
 constexpr uint32_t STARTUP_LOGO_DURATION_MS = 5000;
 constexpr uint32_t CONNECTING_FACE_MIN_DURATION_MS = 2000;
 constexpr uint32_t WAKING_ANIMATION_DURATION_MS = 2000;
 
-// Confirmed faces render live Amp state. Holding the dial button opens a
-// picker that automatically runs the synchronized fixture lifecycle while the
-// dial previews each design. The optional scripted toggle runs that lifecycle
-// outside the picker too.
-constexpr bool DESIGN_REEL_SCRIPTED = false;
-constexpr uint8_t REEL_VERSION = 5;
-constexpr uint8_t REEL_MODE_COUNT = 4;
+// Confirmed faces render live Amp state. The picker runs the synchronized
+// fixture lifecycle while the dial previews each design.
+constexpr uint8_t REEL_VERSION = 6;
+constexpr uint8_t REEL_MODE_COUNT = 3;
+constexpr uint8_t DEFAULT_REEL_MODE = 1;
 constexpr uint8_t DEBUG_FACE_PHASE_COUNT = 5;
 constexpr uint32_t REEL_OVERLAY_MS = 1800;
 constexpr uint32_t IDLE_MESSAGE_DELAY_MS = 20 * 60 * 1000;
 constexpr uint32_t IDLE_MESSAGE_INTERVAL_MS = 20 * 60 * 1000;
 constexpr uint32_t IDLE_MESSAGE_DURATION_MS = 2 * 60 * 1000;
 const char* const REEL_MODE_NAMES[REEL_MODE_COUNT] = {
-    "MINIMAL", "KNOCK", "BEACON", "PANIC",
+    "MINIMAL", "BEACON", "PANIC",
 };
 const char* const DEBUG_FACE_PHASE_NAMES[DEBUG_FACE_PHASE_COUNT] = {
     "IDLE", "WORKING", "MESSAGE", "ATTENTION", "ALL CLEAR",
@@ -136,6 +139,12 @@ enum class NotificationKind : uint8_t {
   Shipped,
 };
 
+struct PendingNotification {
+  NotificationKind kind = NotificationKind::None;
+  char title[AMP_THREAD_TITLE_LENGTH] = "";
+  char state[AMP_THREAD_STATE_LENGTH] = "";
+};
+
 UiPage uiPage = UiPage::Face;
 uint8_t mainMenuIndex = 0;
 uint8_t settingsMenuIndex = 0;
@@ -145,18 +154,27 @@ bool debugFaceActive = false;
 uint8_t debugFacePhase = 0;
 uint32_t debugFacePhaseChangedAt = 0;
 uint8_t selectedThreadIndex = 0;
+char selectedThreadId[AMP_THREAD_ID_LENGTH] = "";
+char selectedThreadTitle[AMP_THREAD_TITLE_LENGTH] = "";
 AmpThreadSummary detailThread;
 bool detailUnreadAvailable = false;
 uint8_t detailThreadTotal = 0;
 NotificationKind notificationKind = NotificationKind::None;
-uint32_t notificationStartedAt = 0;
+uint32_t notificationElapsedMs = 0;
+uint32_t notificationUpdatedAt = 0;
 char notificationThreadTitle[AMP_THREAD_TITLE_LENGTH] = "";
+char notificationThreadState[AMP_THREAD_STATE_LENGTH] = "";
+PendingNotification notificationQueue[NOTIFICATION_QUEUE_LIMIT];
+uint8_t notificationQueueCount = 0;
+char seenEventIds[SEEN_EVENT_LIMIT][AMP_EVENT_ID_LENGTH] = {};
+uint8_t seenEventCount = 0;
+uint8_t nextSeenEventIndex = 0;
 AmpStatsSnapshot previousStats;
 bool statsBaselineReady = false;
 uint32_t reelAllClearStartedAt = 0;
 
-uint8_t reelMode = 0;
-uint8_t reelModeBeforeSelection = 0;
+uint8_t reelMode = DEFAULT_REEL_MODE;
+uint8_t reelModeBeforeSelection = DEFAULT_REEL_MODE;
 uint32_t reelModeChangedAt = 0;
 bool reelModeSelecting = false;
 uint32_t reelSelectionStartedAt = 0;
@@ -268,11 +286,43 @@ void showDebugFace(uint32_t now) {
                 DEBUG_FACE_PHASE_NAMES[debugFacePhase]);
 }
 
+int16_t selectedThreadPosition(const AmpStatsSnapshot& stats) {
+  for (uint8_t index = 0; index < stats.threadCount; ++index) {
+    const AmpThreadSummary& thread = stats.threads[index];
+    if ((selectedThreadId[0] &&
+         std::strcmp(selectedThreadId, thread.id) == 0) ||
+        (!selectedThreadId[0] && selectedThreadTitle[0] &&
+         std::strcmp(selectedThreadTitle, thread.title) == 0)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+void rememberSelectedThread(const AmpThreadSummary& thread) {
+  std::snprintf(selectedThreadId, sizeof(selectedThreadId), "%s", thread.id);
+  std::snprintf(selectedThreadTitle, sizeof(selectedThreadTitle), "%s",
+                thread.title);
+}
+
+bool reconcileSelectedThread(const AmpStatsSnapshot& stats) {
+  if (!stats.available || stats.threadCount == 0) {
+    return false;
+  }
+  const int16_t position = selectedThreadPosition(stats);
+  if (position >= 0) {
+    selectedThreadIndex = static_cast<uint8_t>(position);
+  } else {
+    selectedThreadIndex = std::min<uint8_t>(selectedThreadIndex,
+                                            stats.threadCount - 1);
+    rememberSelectedThread(stats.threads[selectedThreadIndex]);
+  }
+  return true;
+}
+
 void showThreadList(uint32_t now) {
   const AmpStatsSnapshot stats = getAmpStats();
-  if (stats.threadCount > 0 && selectedThreadIndex >= stats.threadCount) {
-    selectedThreadIndex = stats.threadCount - 1;
-  }
+  reconcileSelectedThread(stats);
   uiPage = UiPage::ThreadList;
   lastBrowserInteractionAt = now;
   encoderFeedbackActive = false;
@@ -281,10 +331,11 @@ void showThreadList(uint32_t now) {
 
 void openSelectedThread(uint32_t now) {
   const AmpStatsSnapshot stats = getAmpStats();
-  if (!stats.available || selectedThreadIndex >= stats.threadCount) {
+  if (!reconcileSelectedThread(stats)) {
     return;
   }
   detailThread = stats.threads[selectedThreadIndex];
+  rememberSelectedThread(detailThread);
   detailUnreadAvailable = stats.unreadAvailable;
   detailThreadTotal = stats.threadCount;
   uiPage = UiPage::ThreadDetail;
@@ -295,18 +346,35 @@ void openSelectedThread(uint32_t now) {
 
 void navigateThreads(int8_t steps, uint32_t now, bool showDetail) {
   const AmpStatsSnapshot stats = getAmpStats();
-  if (!stats.available || stats.threadCount == 0) {
+  if (!reconcileSelectedThread(stats)) {
     return;
   }
   const int16_t next = static_cast<int16_t>(selectedThreadIndex) + steps;
   selectedThreadIndex = static_cast<uint8_t>(std::max<int16_t>(
       0, std::min<int16_t>(stats.threadCount - 1, next)));
+  rememberSelectedThread(stats.threads[selectedThreadIndex]);
   lastBrowserInteractionAt = now;
   if (showDetail) {
     detailThread = stats.threads[selectedThreadIndex];
     detailUnreadAvailable = stats.unreadAvailable;
     detailThreadTotal = stats.threadCount;
   }
+}
+
+bool refreshThreadDetail() {
+  const AmpStatsSnapshot stats = getAmpStats();
+  if (!stats.available) {
+    return true;
+  }
+  const int16_t position = selectedThreadPosition(stats);
+  if (position < 0) {
+    return false;
+  }
+  selectedThreadIndex = static_cast<uint8_t>(position);
+  detailThread = stats.threads[selectedThreadIndex];
+  detailUnreadAvailable = stats.unreadAvailable;
+  detailThreadTotal = stats.threadCount;
+  return true;
 }
 
 void saveSelectedFace() {
@@ -330,7 +398,7 @@ void resetSettings(uint32_t now) {
   preferences.clear();
   preferences.end();
 
-  reelMode = 0;
+  reelMode = DEFAULT_REEL_MODE;
   blinkingDisabled = false;
   debugFaceActive = false;
   debugFacePhase = 0;
@@ -963,38 +1031,190 @@ bool stateIsWorking(const char* state) {
          std::strcmp(state, "running_tools") == 0;
 }
 
-void startNotification(NotificationKind kind, const char* title, uint32_t now) {
-  notificationKind = kind;
-  notificationStartedAt = now;
+const char* notificationName(NotificationKind kind) {
+  if (kind == NotificationKind::Attention) return "needs attention";
+  if (kind == NotificationKind::Message) return "new message";
+  if (kind == NotificationKind::Shipped) return "shipped";
+  return "thread working";
+}
+
+void startNotification(const PendingNotification& notification, uint32_t now) {
+  notificationKind = notification.kind;
+  notificationElapsedMs = 0;
+  notificationUpdatedAt = now;
   std::snprintf(notificationThreadTitle, sizeof(notificationThreadTitle), "%s",
-                title ? title : "");
+                notification.title);
+  std::snprintf(notificationThreadState, sizeof(notificationThreadState), "%s",
+                notification.state);
   Serial.printf("Notification: %s%s%s\n",
-                kind == NotificationKind::Attention
-                    ? "needs attention"
-                    : (kind == NotificationKind::Message
-                           ? "new message"
-                           : (kind == NotificationKind::Shipped
-                                  ? "shipped"
-                                  : "thread working")),
+                notificationName(notification.kind),
                 notificationThreadTitle[0] ? " — " : "",
                 notificationThreadTitle);
 }
 
-void updateNotifications(uint32_t now) {
-  const AmpStatsSnapshot current = getAmpStats();
-  if (!current.available) {
-    statsBaselineReady = false;
+uint8_t queuedNotificationRank(NotificationKind kind) {
+  if (kind == NotificationKind::Shipped) return 0;
+  if (kind == NotificationKind::Message ||
+      kind == NotificationKind::ThreadActive) {
+    return 1;
+  }
+  return 2;
+}
+
+void appendNotification(const PendingNotification& notification) {
+  if (notificationQueueCount == NOTIFICATION_QUEUE_LIMIT) {
+    uint8_t discardIndex = 0;
+    for (uint8_t index = 1; index < notificationQueueCount; ++index) {
+      if (queuedNotificationRank(notificationQueue[index].kind) >
+          queuedNotificationRank(notificationQueue[discardIndex].kind)) {
+        discardIndex = index;
+      }
+    }
+    if (queuedNotificationRank(notification.kind) >
+        queuedNotificationRank(notificationQueue[discardIndex].kind)) {
+      Serial.println(
+          "Notification queue full; discarded lower-priority event");
+      return;
+    }
+    for (uint8_t index = discardIndex + 1; index < notificationQueueCount;
+         ++index) {
+      notificationQueue[index - 1] = notificationQueue[index];
+    }
+    --notificationQueueCount;
+    Serial.println(
+        "Notification queue full; replaced oldest low-priority event");
+  }
+  notificationQueue[notificationQueueCount++] = notification;
+}
+
+bool canDisplayNotifications() {
+  return uiPage == UiPage::Face && initialSetupCompletedAt != 0 &&
+         !reelModeSelecting && !debugFaceActive;
+}
+
+void queueNotification(NotificationKind kind, const char* title,
+                       const char* state, uint32_t now) {
+  PendingNotification notification;
+  notification.kind = kind;
+  std::snprintf(notification.title, sizeof(notification.title), "%s",
+                title ? title : "");
+  std::snprintf(notification.state, sizeof(notification.state), "%s",
+                state ? state : "");
+
+  const bool preemptsAttention =
+      notificationKind == NotificationKind::Attention &&
+      (kind == NotificationKind::Message ||
+       kind == NotificationKind::ThreadActive ||
+       kind == NotificationKind::Shipped);
+  const bool preemptsOther = kind == NotificationKind::Shipped &&
+                             notificationKind != NotificationKind::None &&
+                             notificationKind != NotificationKind::Shipped;
+  if (preemptsAttention || preemptsOther) {
+    PendingNotification interrupted;
+    interrupted.kind = notificationKind;
+    std::snprintf(interrupted.title, sizeof(interrupted.title), "%s",
+                  notificationThreadTitle);
+    std::snprintf(interrupted.state, sizeof(interrupted.state), "%s",
+                  notificationThreadState);
+    appendNotification(interrupted);
+    startNotification(notification, now);
     return;
   }
-  if (!statsBaselineReady) {
-    previousStats = current;
-    statsBaselineReady = true;
-    return;
+  appendNotification(notification);
+}
+
+uint32_t currentNotificationDuration() {
+  return notificationKind == NotificationKind::Shipped
+             ? SHIPPED_NOTIFICATION_DURATION_MS
+             : NOTIFICATION_DURATION_MS;
+}
+
+void advanceNotifications(uint32_t now) {
+  if (notificationUpdatedAt == 0) notificationUpdatedAt = now;
+  const uint32_t elapsed = now - notificationUpdatedAt;
+  notificationUpdatedAt = now;
+  if (notificationKind != NotificationKind::None &&
+      canDisplayNotifications()) {
+    notificationElapsedMs += elapsed;
+    if (notificationElapsedMs >= currentNotificationDuration()) {
+      notificationKind = NotificationKind::None;
+      notificationThreadTitle[0] = '\0';
+      notificationThreadState[0] = '\0';
+      notificationElapsedMs = 0;
+    }
   }
+  if (notificationKind == NotificationKind::None &&
+      notificationQueueCount > 0 && canDisplayNotifications()) {
+    uint8_t nextIndex = 0;
+    for (uint8_t index = 1; index < notificationQueueCount; ++index) {
+      if (queuedNotificationRank(notificationQueue[index].kind) <
+          queuedNotificationRank(notificationQueue[nextIndex].kind)) {
+        nextIndex = index;
+      }
+    }
+    const PendingNotification next = notificationQueue[nextIndex];
+    for (uint8_t index = nextIndex + 1; index < notificationQueueCount;
+         ++index) {
+      notificationQueue[index - 1] = notificationQueue[index];
+    }
+    --notificationQueueCount;
+    startNotification(next, now);
+  }
+}
+
+bool eventWasSeen(const char* id) {
+  if (!id || !id[0]) return true;
+  for (uint8_t index = 0; index < seenEventCount; ++index) {
+    if (std::strcmp(seenEventIds[index], id) == 0) return true;
+  }
+  return false;
+}
+
+void rememberEvent(const char* id) {
+  if (!id || !id[0] || eventWasSeen(id)) return;
+  std::snprintf(seenEventIds[nextSeenEventIndex], AMP_EVENT_ID_LENGTH, "%s",
+                id);
+  nextSeenEventIndex = (nextSeenEventIndex + 1) % SEEN_EVENT_LIMIT;
+  seenEventCount = std::min<uint8_t>(SEEN_EVENT_LIMIT, seenEventCount + 1);
+}
+
+NotificationKind eventNotificationKind(const char* kind) {
+  if (std::strcmp(kind, "attention") == 0) {
+    return NotificationKind::Attention;
+  }
+  if (std::strcmp(kind, "message") == 0) {
+    return NotificationKind::Message;
+  }
+  if (std::strcmp(kind, "working") == 0) {
+    return NotificationKind::ThreadActive;
+  }
+  if (std::strcmp(kind, "shipped") == 0) {
+    return NotificationKind::Shipped;
+  }
+  return NotificationKind::None;
+}
+
+void collectBridgeEvents(const AmpStatsSnapshot& current, uint32_t now,
+                         bool baseline) {
+  for (uint8_t index = 0; index < current.eventCount; ++index) {
+    const AmpThreadEvent& event = current.events[index];
+    if (eventWasSeen(event.id)) continue;
+    rememberEvent(event.id);
+    if (baseline) continue;
+    const NotificationKind kind = eventNotificationKind(event.kind);
+    if (kind != NotificationKind::None) {
+      queueNotification(kind, event.title, event.state, now);
+    }
+  }
+}
+
+void collectLegacyNotifications(const AmpStatsSnapshot& current,
+                                uint32_t now) {
 
   const char* messageTitle = nullptr;
   const char* activeTitle = nullptr;
   const char* attentionTitle = nullptr;
+  const char* attentionState = nullptr;
   const char* shippedTitle = nullptr;
   for (uint8_t index = 0; index < current.threadCount; ++index) {
     const AmpThreadSummary& thread = current.threads[index];
@@ -1007,6 +1227,7 @@ void updateNotifications(uint32_t now) {
                      std::strcmp(previous->state, "error") == 0);
     if (!attentionTitle && needsAttention && !previouslyNeededAttention) {
       attentionTitle = thread.title;
+      attentionState = thread.state;
     }
     if (!messageTitle && thread.unread && previous && !previous->unread) {
       messageTitle = thread.title;
@@ -1015,57 +1236,56 @@ void updateNotifications(uint32_t now) {
         !stateIsWorking(previous->state)) {
       activeTitle = thread.title;
     }
-    if (!shippedTitle && thread.shipped &&
-        (!previous || !previous->shipped)) {
+    if (!shippedTitle && thread.shipped && previous && !previous->shipped) {
       shippedTitle = thread.title;
     }
   }
 
-  if (current.attentionAvailable &&
-      current.needsAttention > previousStats.needsAttention) {
-    if (!attentionTitle) {
-      for (uint8_t index = 0; index < current.threadCount; ++index) {
-        const AmpThreadSummary& thread = current.threads[index];
-        if (std::strcmp(thread.state, "awaiting_approval") == 0 ||
-            std::strcmp(thread.state, "error") == 0) {
-          attentionTitle = thread.title;
-          break;
-        }
-      }
-    }
-    startNotification(NotificationKind::Attention, attentionTitle, now);
-  } else if (current.shippedAvailable &&
-             (shippedTitle || current.shipped > previousStats.shipped)) {
-    startNotification(NotificationKind::Shipped, shippedTitle, now);
-  } else if (current.unreadAvailable &&
-             (messageTitle || current.unread > previousStats.unread)) {
-    for (uint8_t index = 0; index < current.threadCount; ++index) {
-      const AmpThreadSummary& thread = current.threads[index];
-      const AmpThreadSummary* previous = findPreviousThread(thread);
-      if (!messageTitle && thread.unread && !previous) {
-        messageTitle = thread.title;
-        break;
-      }
-    }
-    startNotification(NotificationKind::Message, messageTitle, now);
-  } else if (activeTitle || current.working > previousStats.working) {
-    for (uint8_t index = 0; index < current.threadCount; ++index) {
-      const AmpThreadSummary& thread = current.threads[index];
-      const AmpThreadSummary* previous = findPreviousThread(thread);
-      if (!activeTitle && stateIsWorking(thread.state) && !previous) {
-        activeTitle = thread.title;
-        break;
-      }
-    }
-    startNotification(NotificationKind::ThreadActive, activeTitle, now);
-  } else if (current.working == 0 && current.needsAttention == 0 &&
-             current.unread == 0 &&
-             (previousStats.working > 0 || previousStats.needsAttention > 0 ||
-              previousStats.unread > 0)) {
-    reelAllClearStartedAt = now;
-    Serial.println("Notification: all clear");
+  if (current.shippedAvailable &&
+      (shippedTitle || current.shipped > previousStats.shipped)) {
+    queueNotification(NotificationKind::Shipped, shippedTitle, nullptr, now);
   }
-  previousStats = current;
+  if (current.unreadAvailable &&
+      (messageTitle || current.unread > previousStats.unread)) {
+    queueNotification(NotificationKind::Message, messageTitle, nullptr, now);
+  }
+  if (activeTitle || current.working > previousStats.working) {
+    queueNotification(NotificationKind::ThreadActive, activeTitle, nullptr, now);
+  }
+  if (current.attentionAvailable &&
+      (attentionTitle ||
+       current.needsAttention > previousStats.needsAttention)) {
+    queueNotification(NotificationKind::Attention, attentionTitle,
+                      attentionState, now);
+  }
+}
+
+void updateNotifications(uint32_t now) {
+  const AmpStatsSnapshot current = getAmpStats();
+  if (current.available) {
+    if (!statsBaselineReady) {
+      if (current.eventsAvailable) {
+        collectBridgeEvents(current, now, true);
+      }
+      previousStats = current;
+      statsBaselineReady = true;
+    } else {
+      if (current.eventsAvailable) {
+        collectBridgeEvents(current, now, false);
+      } else {
+        collectLegacyNotifications(current, now);
+      }
+      if (current.working == 0 && current.needsAttention == 0 &&
+          current.unread == 0 &&
+          (previousStats.working > 0 || previousStats.needsAttention > 0 ||
+           previousStats.unread > 0)) {
+        reelAllClearStartedAt = now;
+        Serial.println("Notification: all clear");
+      }
+      previousStats = current;
+    }
+  }
+  advanceNotifications(now);
 }
 
 void copyEllipsized(char* output, size_t outputSize, const char* input,
@@ -1126,6 +1346,7 @@ void threadStatusLabel(const AmpThreadSummary& thread, char* label,
 
 void drawThreadOverview() {
   const AmpStatsSnapshot stats = getAmpStats();
+  reconcileSelectedThread(stats);
   canvas.fillScreen(logoBackground);
   drawCenteredText("THREAD OVERVIEW", 8, 2, eyeColor);
   canvas.drawFastHLine(12, 30, 296, logoHighlightColor);
@@ -1271,11 +1492,6 @@ void drawThreadDetail() {
   drawCenteredText("TURN: THREAD   PRESS: BACK", 218, 1, eyeColor);
 }
 
-
-// Live state drives the selected design by default. The optional scripted
-// comparison plays the same 25 s lifecycle in every mode: idle -> thread
-// active -> new message -> needs attention -> all clear.
-
 enum class ReelPhase : uint8_t {
   Idle,
   Working,
@@ -1299,9 +1515,10 @@ struct ReelScene {
   uint32_t phaseElapsed = 0;
   float intro = 0.0F;  // eased 0..1 over the first 600 ms of the phase
   float beat = 0.0F;   // shared pulse for urgent accents
+  bool fromNotification = false;
   AmpStatsSnapshot stats;
   char eventTitle[AMP_THREAD_TITLE_LENGTH] = "";
-  char eventProject[AMP_THREAD_PROJECT_LENGTH] = "";
+  char eventState[AMP_THREAD_STATE_LENGTH] = "";
 };
 
 uint16_t reelGreenColor() { return display.color565(104, 180, 111); }
@@ -1361,8 +1578,6 @@ ReelScene reelScene(uint32_t elapsed) {
                     "%s", "working");
       std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
                     "Redesign notification pipeline");
-      std::snprintf(scene.eventProject, sizeof(scene.eventProject), "%s",
-                    "pocketpuck");
       break;
     case ReelPhase::Message:
       stats.working = 2;
@@ -1375,8 +1590,6 @@ ReelScene reelScene(uint32_t elapsed) {
       stats.threads[0].unread = true;
       std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
                     "Redesign notification pipeline");
-      std::snprintf(scene.eventProject, sizeof(scene.eventProject), "%s",
-                    "pocketpuck");
       break;
     case ReelPhase::Attention:
       stats.working = 1;
@@ -1392,8 +1605,8 @@ ReelScene reelScene(uint32_t elapsed) {
       stats.threads[0].unread = true;
       std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
                     "Review auth integration test");
-      std::snprintf(scene.eventProject, sizeof(scene.eventProject), "%s",
-                    "amp");
+      std::snprintf(scene.eventState, sizeof(scene.eventState), "%s",
+                    "awaiting_approval");
       break;
     case ReelPhase::Resolved:
       stats.idle = 4;
@@ -1454,31 +1667,36 @@ ReelScene liveReelScene(uint32_t now) {
   ReelScene scene;
   scene.stats = getAmpStats();
 
-  const uint32_t notificationElapsed = now - notificationStartedAt;
-  if (notificationKind == NotificationKind::Shipped &&
-      notificationElapsed < SHIPPED_NOTIFICATION_DURATION_MS) {
-    scene.phase = ReelPhase::Shipped;
-    scene.phaseElapsed = notificationElapsed;
+  if (notificationKind != NotificationKind::None) {
+    scene.fromNotification = true;
+    if (notificationKind == NotificationKind::Shipped) {
+      scene.phase = ReelPhase::Shipped;
+    } else if (notificationKind == NotificationKind::Attention) {
+      scene.phase = ReelPhase::Attention;
+    } else if (notificationKind == NotificationKind::Message) {
+      scene.phase = ReelPhase::Message;
+      scene.stats.unread = std::max<uint16_t>(1, scene.stats.unread);
+    } else {
+      scene.phase = ReelPhase::Working;
+      if (scene.stats.working == 0 && scene.stats.shipping == 0) {
+        scene.stats.working = 1;
+      }
+    }
+    if (notificationKind == NotificationKind::Attention) {
+      scene.stats.needsAttention =
+          std::max<uint16_t>(1, scene.stats.needsAttention);
+    }
+    scene.phaseElapsed = notificationElapsedMs;
     std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
                   notificationThreadTitle);
+    std::snprintf(scene.eventState, sizeof(scene.eventState), "%s",
+                  notificationThreadState);
   } else if (scene.stats.available && scene.stats.working == 0 &&
       scene.stats.needsAttention == 0 && scene.stats.unread == 0 &&
       reelAllClearStartedAt != 0 &&
       now - reelAllClearStartedAt < REEL_RESOLVED_MS) {
     scene.phase = ReelPhase::Resolved;
     scene.phaseElapsed = now - reelAllClearStartedAt;
-  } else if (notificationKind != NotificationKind::None &&
-             notificationElapsed < NOTIFICATION_DURATION_MS) {
-    if (notificationKind == NotificationKind::Attention) {
-      scene.phase = ReelPhase::Attention;
-    } else if (notificationKind == NotificationKind::Message) {
-      scene.phase = ReelPhase::Message;
-    } else {
-      scene.phase = ReelPhase::Working;
-    }
-    scene.phaseElapsed = notificationElapsed;
-    std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
-                  notificationThreadTitle);
   } else if (scene.stats.available && scene.stats.needsAttention > 0) {
     scene.phase = ReelPhase::Attention;
     scene.phaseElapsed = NOTIFICATION_DURATION_MS + 200 + now;
@@ -1496,27 +1714,14 @@ ReelScene liveReelScene(uint32_t now) {
     scene.phaseElapsed = now;
   }
 
-  const AmpThreadSummary* thread = nullptr;
-  if (scene.eventTitle[0]) {
-    for (uint8_t index = 0; index < scene.stats.threadCount; ++index) {
-      if (std::strcmp(scene.stats.threads[index].title, scene.eventTitle) == 0) {
-        thread = &scene.stats.threads[index];
-        break;
-      }
-    }
-  }
-  if (!thread) {
-    thread = reelThreadForPhase(scene.stats, scene.phase);
-  }
+  const AmpThreadSummary* thread =
+      scene.fromNotification ? nullptr
+                             : reelThreadForPhase(scene.stats, scene.phase);
   if (thread) {
-    if (!scene.eventTitle[0]) {
-      std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
-                    thread->title);
-    }
-    if (thread->project[0]) {
-      std::snprintf(scene.eventProject, sizeof(scene.eventProject), "%s",
-                    thread->project);
-    }
+    std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
+                  thread->title);
+    std::snprintf(scene.eventState, sizeof(scene.eventState), "%s",
+                  thread->state);
   } else if (!scene.eventTitle[0] && scene.phase != ReelPhase::Idle &&
              scene.phase != ReelPhase::Resolved) {
     std::snprintf(scene.eventTitle, sizeof(scene.eventTitle), "%s",
@@ -1697,10 +1902,6 @@ uint16_t reelPhaseColor(const ReelScene& scene) {
   return reelStatus(scene).color;
 }
 
-const char* reelProject(const ReelScene& scene) {
-  return scene.eventProject[0] ? scene.eventProject : "AMP";
-}
-
 const AmpThreadSummary* reelAttentionThread(const ReelScene& scene) {
   if (scene.eventTitle[0]) {
     for (uint8_t index = 0; index < scene.stats.threadCount; ++index) {
@@ -1714,6 +1915,12 @@ const AmpThreadSummary* reelAttentionThread(const ReelScene& scene) {
   return reelThreadForPhase(scene.stats, ReelPhase::Attention);
 }
 
+const char* reelAttentionState(const ReelScene& scene) {
+  if (scene.eventState[0]) return scene.eventState;
+  const AmpThreadSummary* thread = reelAttentionThread(scene);
+  return thread ? thread->state : "";
+}
+
 const char* reelDetail(const ReelScene& scene) {
   switch (scene.phase) {
     case ReelPhase::Working:
@@ -1724,11 +1931,11 @@ const char* reelDetail(const ReelScene& scene) {
     case ReelPhase::Message:
       return "New message in thread";
     case ReelPhase::Attention: {
-      const AmpThreadSummary* thread = reelAttentionThread(scene);
-      if (thread && std::strcmp(thread->state, "awaiting_approval") == 0) {
+      const char* state = reelAttentionState(scene);
+      if (std::strcmp(state, "awaiting_approval") == 0) {
         return "Waiting for approval";
       }
-      if (thread && std::strcmp(thread->state, "error") == 0) {
+      if (std::strcmp(state, "error") == 0) {
         return "Thread encountered an error";
       }
       return "Action required";
@@ -1811,7 +2018,6 @@ float reelEventExit(const ReelScene& scene) {
 }
 
 uint32_t reelHash(uint32_t value);
-float reelCardSettle(uint32_t elapsed);
 
 const char* reelEventHeadline(const ReelScene& scene) {
   switch (scene.phase) {
@@ -1919,57 +2125,6 @@ void drawShippedLiftoff(uint32_t elapsed, const char* title) {
   }
   canvas.fillRect(0, 228, SCREEN_WIDTH, 12, flame);
   canvas.fillRect(0, 232, SCREEN_WIDTH, 8, hot);
-}
-
-// KNOCK — a solid notification barges in from the side and physically bumps
-// Puck away. Attention knocks repeatedly; quieter events settle once.
-void drawDesignKnock(const ReelScene& scene) {
-  const float show = reelEventVisibility(scene);
-  if (scene.phase == ReelPhase::Working || show < 0.01F) {
-    drawDesignMinimal(scene);
-    return;
-  }
-  const float exit = reelEventExit(scene);
-  const float impact = reelCardSettle(scene.phaseElapsed);
-  const int16_t repeat = scene.phase == ReelPhase::Attention
-                             ? std::lround(scene.beat * 8.0F)
-                             : 0;
-  FacePose pose = reelPose(scene);
-  pose.xOffset += (scene.phase == ReelPhase::Attention ? 74.0F : 48.0F) * show +
-                  repeat;
-  pose.gazeX = -0.9F * show;
-  pose.eyeScale += 0.1F * show;
-  drawFace(pose);
-  const uint16_t color = reelPhaseColor(scene);
-  const int16_t x =
-      std::lround(mix(-294.0F, -9.0F, clamp01(impact) * show)) - repeat;
-  canvas.fillRoundRect(x, 20, 230, 199, 13, color);
-  canvas.fillRect(x + 18, 20, 5, 199, logoBackground);
-  if (show < 0.7F && exit == 0.0F) {
-    return;
-  }
-  canvas.setFont();
-  canvas.setTextSize(1);
-  canvas.setTextColor(logoBackground);
-  canvas.setCursor(x + 35, 38);
-  canvas.print(reelProject(scene));
-  drawSelectedText(reelEventHeadline(scene), x + 35, 63, 2,
-                   logoBackground);
-  char firstLine[25];
-  char secondLine[25];
-  splitTitle(scene.eventTitle, firstLine, secondLine);
-  canvas.setCursor(x + 35, 103);
-  canvas.print(firstLine);
-  if (secondLine[0]) {
-    canvas.setCursor(x + 35, 119);
-    canvas.print(secondLine);
-  }
-  if (scene.phase == ReelPhase::Attention) {
-    canvas.setCursor(x + 35, 153);
-    canvas.print(reelDetail(scene));
-    canvas.setCursor(x + 35, 188);
-    canvas.print("OPEN AMP TO RESPOND");
-  }
 }
 
 // BEACON — a graphic pulse radiates behind a central message capsule. Working
@@ -2099,11 +2254,11 @@ void drawDesignPanic(const ReelScene& scene) {
   const char* attentionTop = "ACTION";
   const char* attentionBottom = "REQUIRED";
   if (scene.phase == ReelPhase::Attention) {
-    const AmpThreadSummary* thread = reelAttentionThread(scene);
-    if (thread && std::strcmp(thread->state, "awaiting_approval") == 0) {
+    const char* state = reelAttentionState(scene);
+    if (std::strcmp(state, "awaiting_approval") == 0) {
       attentionTop = "APPROVAL";
       attentionBottom = "NEEDED";
-    } else if (thread && std::strcmp(thread->state, "error") == 0) {
+    } else if (std::strcmp(state, "error") == 0) {
       attentionTop = "ERROR";
       attentionBottom = "DETECTED";
     }
@@ -2136,11 +2291,6 @@ void drawDesignPanic(const ReelScene& scene) {
     canvas.drawRoundRect(30, titleY, 260, 24, 6, color);
     drawCenteredText(title, titleY + 8, 1, color);
   }
-}
-
-float reelCardSettle(uint32_t elapsed) {
-  const float t = elapsed;
-  return 1.0F - std::exp(-t * 0.0065F) * std::cos(t * 0.013F);
 }
 
 uint32_t reelHash(uint32_t value) {
@@ -2192,7 +2342,7 @@ void drawReelOverlay(uint32_t now) {
 void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
   const uint32_t reelElapsed =
       reelModeSelecting ? now - reelSelectionStartedAt : elapsed;
-  const bool scripted = DESIGN_REEL_SCRIPTED || reelModeSelecting;
+  const bool scripted = reelModeSelecting;
   const ReelScene scene = debugFaceActive
                               ? reelScene(debugFaceElapsed(now))
                               : (scripted ? reelScene(reelElapsed)
@@ -2225,16 +2375,13 @@ void drawDesignReelFrame(uint32_t elapsed, uint32_t now) {
       drawDesignMinimal(scene);
       break;
     case 1:
-      drawDesignKnock(scene);
-      break;
-    case 2:
       drawDesignBeacon(scene);
       break;
-    case 3:
+    case 2:
       drawDesignPanic(scene);
       break;
     default:
-      drawDesignMinimal(scene);
+      drawDesignBeacon(scene);
       break;
   }
   drawReelOverlay(now);
@@ -2281,7 +2428,7 @@ void pushCanvas() {
 
 void printWiring() {
   Serial.println();
-  Serial.println("PocketPuck personality demo");
+  Serial.println("PocketPuck");
   Serial.println("Waveshare LCD -> Nano ESP32");
   Serial.println("VCC -> 3V3, GND -> GND");
   Serial.println("DIN -> D11, CLK -> D12, CS -> D10");
@@ -2321,12 +2468,13 @@ void setup() {
   Preferences preferences;
   preferences.begin("pocketpuck", false);
   const uint8_t savedReelVersion = preferences.getUChar("designVer", 0);
-  const uint8_t savedReelMode = preferences.getUChar("design", 0);
+  const uint8_t savedReelMode =
+      preferences.getUChar("design", DEFAULT_REEL_MODE);
   blinkingDisabled = preferences.getBool("noBlink", false);
   reelMode = savedReelVersion == REEL_VERSION &&
                      savedReelMode < REEL_MODE_COUNT
                  ? savedReelMode
-                 : 0;
+                 : DEFAULT_REEL_MODE;
   preferences.end();
   Serial.printf("Saved design: %u/%u %s\n", reelMode + 1, REEL_MODE_COUNT,
                 REEL_MODE_NAMES[reelMode]);
@@ -2383,22 +2531,19 @@ void loop() {
     ampStatsStarted = true;
     wifiConnectionStartedAt = now;
   }
-  if (ampStatsStarted) {
-    updateAmpStats(now);
-  }
-  updateNotifications(now);
   if (now - lastFrameAt < FRAME_INTERVAL_MS) {
     return;
   }
 
   lastFrameAt = now;
-  const AmpStatsSnapshot stats = getAmpStats();
+  updateNotifications(now);
   if (!ampStatsStarted) {
     drawLogo(now - demoStartedAt);
     pushCanvas();
     return;
   }
   if (initialSetupCompletedAt == 0) {
+    const AmpStatsSnapshot stats = getAmpStats();
     const uint32_t connectingElapsed = now - wifiConnectionStartedAt;
     if ((!stats.configured ||
          (!stats.wifiConnected && stats.initialAttemptComplete)) &&
@@ -2443,8 +2588,14 @@ void loop() {
     drawSettings(now);
     pushCanvas();
   } else if (uiPage == UiPage::ThreadDetail) {
-    drawThreadDetail();
-    pushCanvas();
+    if (refreshThreadDetail()) {
+      drawThreadDetail();
+      pushCanvas();
+    } else {
+      showThreadList(now);
+      drawThreadOverview();
+      pushCanvas();
+    }
   } else if (uiPage == UiPage::ThreadList) {
     drawThreadOverview();
     pushCanvas();

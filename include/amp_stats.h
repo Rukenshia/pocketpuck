@@ -3,10 +3,13 @@
 #include <Arduino.h>
 
 constexpr uint8_t AMP_THREAD_SUMMARY_LIMIT = 4;
+constexpr uint8_t AMP_THREAD_EVENT_LIMIT = 8;
 constexpr size_t AMP_THREAD_ID_LENGTH = 40;
 constexpr size_t AMP_THREAD_TITLE_LENGTH = 49;
 constexpr size_t AMP_THREAD_PROJECT_LENGTH = 25;
 constexpr size_t AMP_THREAD_STATE_LENGTH = 20;
+constexpr size_t AMP_EVENT_ID_LENGTH = 40;
+constexpr size_t AMP_EVENT_KIND_LENGTH = 12;
 
 struct AmpThreadSummary {
   char id[AMP_THREAD_ID_LENGTH] = "";
@@ -19,6 +22,13 @@ struct AmpThreadSummary {
   bool shipped = false;
 };
 
+struct AmpThreadEvent {
+  char id[AMP_EVENT_ID_LENGTH] = "";
+  char title[AMP_THREAD_TITLE_LENGTH] = "";
+  char state[AMP_THREAD_STATE_LENGTH] = "";
+  char kind[AMP_EVENT_KIND_LENGTH] = "";
+};
+
 struct AmpStatsSnapshot {
   bool configured = false;
   bool wifiConnected = false;
@@ -27,8 +37,8 @@ struct AmpStatsSnapshot {
   bool initialAttemptComplete = false;
   bool attentionAvailable = false;
   bool unreadAvailable = false;
-  bool shippingAvailable = false;
   bool shippedAvailable = false;
+  bool eventsAvailable = false;
   uint16_t working = 0;
   uint16_t needsAttention = 0;
   uint16_t unread = 0;
@@ -37,9 +47,10 @@ struct AmpStatsSnapshot {
   uint16_t idle = 0;
   uint16_t total = 0;
   uint8_t threadCount = 0;
+  uint8_t eventCount = 0;
   AmpThreadSummary threads[AMP_THREAD_SUMMARY_LIMIT];
+  AmpThreadEvent events[AMP_THREAD_EVENT_LIMIT];
 };
 
 void beginAmpStats();
-void updateAmpStats(uint32_t now);
 AmpStatsSnapshot getAmpStats();

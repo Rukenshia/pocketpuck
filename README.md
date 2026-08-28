@@ -42,7 +42,7 @@ your encoder, swap its `CLK` and `DT` wires.
 
 On the animated face, turn the dial to adjust the LCD backlight and press it to
 open the thread list. Hold the button for 700 ms to open the main menu. Select
-**Select Face** to preview the Minimal, Knock, Beacon, and Panic designs with a
+**Select Face** to preview the Minimal, Beacon, and Panic designs with a
 synchronized scripted status lifecycle; pressing confirms a choice that
 persists across reboots. Prominent display copy uses IBM Plex Mono, while
 compact labels retain the pixel font so dense screens remain readable. The

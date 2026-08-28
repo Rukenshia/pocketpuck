@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   BridgeCache,
+  EVENT_LIMIT,
+  EVENT_RETENTION_MS,
   INITIAL_EMPTY_SETTLE_MS,
   MAX_DATA_AGE_MS,
   THREAD_LIMIT,
@@ -96,6 +98,168 @@ describe("BridgeCache", () => {
     expect(value.items[0].state).toBe("awaiting_approval");
     expect(value.items[0].project).toBe("pocketpuck");
     expect(value.items[0].workspaceDisplayName).toBe("Friendly Puck");
+  });
+
+  test("publishes simultaneous events without losing lower-priority changes", () => {
+    const cache = new BridgeCache();
+    cache.updatePrivate([
+      { threadId: "message", title: "Message thread", state: "idle" },
+      { threadId: "working", title: "Working thread", state: "idle" },
+      { threadId: "attention", title: "Attention thread", state: "idle" },
+    ]);
+    expect(cache.read().events).toEqual([]);
+
+    cache.updatePrivate([
+      {
+        threadId: "message",
+        title: "Message thread",
+        state: "idle",
+        hasUnreadMessages: true,
+      },
+      { threadId: "working", title: "Working thread", state: "working" },
+      {
+        threadId: "attention",
+        title: "Attention thread",
+        state: "awaiting_approval",
+      },
+    ]);
+
+    const events = cache.read().events;
+    expect(events.map((event) => event.kind)).toEqual([
+      "attention",
+      "working",
+      "message",
+    ]);
+    expect(events.map((event) => event.title)).toEqual([
+      "Attention thread",
+      "Working thread",
+      "Message thread",
+    ]);
+    expect(new Set(events.map((event) => event.id)).size).toBe(3);
+
+    cache.updatePrivate([
+      {
+        threadId: "message",
+        title: "Message thread",
+        state: "idle",
+        hasUnreadMessages: true,
+      },
+      { threadId: "working", title: "Working thread", state: "working" },
+      {
+        threadId: "attention",
+        title: "Attention thread",
+        state: "awaiting_approval",
+      },
+    ]);
+    expect(cache.read().events.map((event) => event.id)).toEqual(
+      events.map((event) => event.id),
+    );
+  });
+
+  test("identifies events outside the bounded summary list", () => {
+    const cache = new BridgeCache();
+    const attention = Array.from({ length: THREAD_LIMIT + 1 }, (_, index) => ({
+      threadId: `attention-${index}`,
+      title: `Attention ${index}`,
+      state: "awaiting_approval",
+    }));
+    cache.updatePrivate([
+      ...attention,
+      { threadId: "hidden", title: "Hidden worker", state: "idle" },
+    ]);
+    cache.updatePrivate([
+      ...attention,
+      { threadId: "hidden", title: "Hidden worker", state: "working" },
+    ]);
+
+    const value = cache.read();
+    expect(value.items.some((item) => item.id === "hidden")).toBeFalse();
+    expect(value.events.at(-1)).toMatchObject({
+      kind: "working",
+      threadId: "hidden",
+      title: "Hidden worker",
+      state: "working",
+    });
+  });
+
+  test("bounds and expires recent events", () => {
+    let now = 100;
+    const cache = new BridgeCache(() => now);
+    const threads = Array.from({ length: EVENT_LIMIT + 2 }, (_, index) => ({
+      threadId: String(index),
+      title: `Thread ${index}`,
+      state: "idle",
+    }));
+    cache.updatePrivate(threads);
+    cache.updatePrivate(
+      threads.map((thread) => ({ ...thread, hasUnreadMessages: true })),
+    );
+    expect(cache.read().events).toHaveLength(EVENT_LIMIT);
+
+    now += EVENT_RETENTION_MS + 1;
+    cache.updatePrivate(
+      threads.map((thread) => ({ ...thread, hasUnreadMessages: true })),
+    );
+    expect(cache.read().events).toEqual([]);
+  });
+
+  test("retains higher-priority events when the event list is full", () => {
+    const cache = new BridgeCache();
+    const attentionThreads = Array.from(
+      { length: EVENT_LIMIT + 2 },
+      (_, index) => ({
+        threadId: `attention-${index}`,
+        title: `Attention ${index}`,
+        state: "idle",
+      }),
+    );
+    const workingThread = {
+      threadId: "working",
+      title: "Important worker",
+      state: "idle",
+    };
+    const messageThread = {
+      threadId: "message",
+      title: "Important message",
+      state: "idle",
+    };
+    cache.updatePrivate([
+      ...attentionThreads,
+      workingThread,
+      messageThread,
+    ]);
+    cache.updatePrivate([
+      ...attentionThreads.map((thread) => ({
+        ...thread,
+        state: "awaiting_approval",
+      })),
+      { ...workingThread, state: "working" },
+      { ...messageThread, hasUnreadMessages: true },
+    ]);
+
+    const events = cache.read().events;
+    expect(events).toHaveLength(EVENT_LIMIT);
+    expect(events.some((event) => event.kind === "working")).toBeTrue();
+    expect(events.some((event) => event.kind === "message")).toBeTrue();
+  });
+
+  test("publishes stable working events from the public fallback", () => {
+    const cache = new BridgeCache();
+    cache.updatePublic({ threads: [publicThread(1)] });
+    cache.updatePublic({ threads: [publicThread(1, true)] });
+
+    const events = cache.read().events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "working",
+      threadId: "1",
+      state: "working",
+    });
+
+    cache.updatePublic({ threads: [publicThread(1, true)] });
+    expect(cache.read().events.map((event) => event.id)).toEqual([
+      events[0].id,
+    ]);
   });
 
   test("preserves the Ship UI lifecycle independently of execution state", () => {
