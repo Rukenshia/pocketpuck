@@ -31,15 +31,14 @@ To open the Settings, long press the dial from the main screen. You can change t
 You can find the 3d models in the `models` directory. You have a choice of multiple hats to give your PocketPuck some extra personality.
 
 <img src="docs/hats.jpg" width=200 />
-(not pictured: the orb - that is still printing)
 
-| Model Name        | Description                                      |
-| ----------------- | ------------------------------------------------ |
-| `puck_manual.stl` | The main body of the PocketPuck.                 |
-| `puck_hat.stl`    | A cute cowboy hat.                               |
-| `puck_obelisk`    | A small obelisk to put on top of the PocketPuck. |
-| `puck_orb.stl`    | An orb as a hat.                                 |
-| `puck_knob.stl`   | An interestingly shaped knob as a hat.           |
+| Model Name         | Description                                                       |
+| ------------------ | ----------------------------------------------------------------- |
+| `puck_manual.stl`  | The main body of the PocketPuck.                                  |
+| `puck_hat.stl`     | A cute cowboy hat.                                                |
+| `puck_obelisk.stl` | A small obelisk to put on top of the PocketPuck.                  |
+| `puck_orb.stl`     | An orb as a hat. Recommended to print with a translucent filament |
+| `puck_knob.stl`    | An interestingly shaped knob as a hat.                            |
 
 You can hot glue the display to the inside of the body or use tape to secure it. The rotary dial goes through the hole and is fastened with a nut.
 
